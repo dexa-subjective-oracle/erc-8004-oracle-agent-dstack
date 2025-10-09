@@ -1,6 +1,6 @@
 {
   "name": "TEE Agent",
-  "description": "Trustless AI agent with Intel TDX attestation",
+  "description": "Trustless AI agent with Intel TDX attestation and key generation via dstack",
   "image": "",
   "supportedTrust": [
     "tee-attestation"
