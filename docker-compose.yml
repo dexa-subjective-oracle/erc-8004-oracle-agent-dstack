@@ -6,17 +6,28 @@ services:
     platform: linux/amd64
     container_name: erc8004-agent
     environment:
-      - GITHUB_REPO=https://github.com/HashWarlock/erc-8004-ex-phala.git
-      - GIT_COMMIT_HASH=b4a0176a754b6264b408501f558a5bc219fd6e78
-      - UPDATE_CODE=${UPDATE_CODE:-true}
+      # Production deployment variables (set as secrets on Phala)
+      - GITHUB_REPO=${GITHUB_REPO:-https://github.com/Phala-Network/erc-8004-tee-agent.git}
+      - GIT_COMMIT_HASH=${GIT_COMMIT_HASH:-HEAD}
+      - UPDATE_CODE=${UPDATE_CODE:-false}
+
+      # Agent configuration
       - AGENT_DOMAIN=${DSTACK_APP_ID}-8000.${DSTACK_GATEWAY_DOMAIN}
       - AGENT_SALT=${AGENT_SALT}
+
+      # TEE/Sandbox configuration
       - SANDBOX_URL=${SANDBOX_URL}
+
+      # Blockchain configuration
       - RPC_URL=${RPC_URL:-https://sepolia.base.org}
       - CHAIN_ID=${CHAIN_ID:-84532}
-      - IDENTITY_REGISTRY_ADDRESS=0xd08eC0f6F00751993169103d2240A6E3aF6920f4
-      - TEE_REGISTRY_ADDRESS=${TEE_REGISTRY_ADDRESS}
-      - TEE_VERIFIER_ADDRESS=${TEE_VERIFIER_ADDRESS}
+
+      # Contract addresses (Base Sepolia defaults)
+      - IDENTITY_REGISTRY_ADDRESS=${IDENTITY_REGISTRY_ADDRESS:-0xd08eC0f6F00751993169103d2240A6E3aF6920f4}
+      - TEE_REGISTRY_ADDRESS=${TEE_REGISTRY_ADDRESS:-0x03eCA4d903Adc96440328C2E3a18B71EB0AFa60D}
+      - TEE_VERIFIER_ADDRESS=${TEE_VERIFIER_ADDRESS:-0x481ce1a6EEC3016d1E61725B1527D73Df1c393a5}
+
+      # Server configuration
       - AGENT_HOST=${AGENT_HOST:-0.0.0.0}
       - AGENT_PORT=${AGENT_PORT:-80}
     volumes:
@@ -31,20 +42,22 @@ services:
         apt-get install -y git &&
         mkdir -p /app/.state &&
         if [ ! -f /app/.state/initialized ] || [ \"$$UPDATE_CODE\" = \"true\" ]; then
-          echo 'Cloning/updating repository...' &&
+          echo '🔄 Cloning repository from $$GITHUB_REPO...' &&
           cd /tmp &&
           git clone $$GITHUB_REPO repo &&
           cd repo &&
           git checkout $$GIT_COMMIT_HASH &&
+          echo '✅ Checked out commit $$GIT_COMMIT_HASH' &&
           cp -r /tmp/repo/* /app/ &&
           cp -r /tmp/repo/.* /app/ 2>/dev/null || true &&
           rm -rf /tmp/repo &&
           touch /app/.state/initialized &&
-          echo 'Repository initialized/updated';
+          echo '✅ Repository initialized successfully';
         else
-          echo 'Repository already initialized';
+          echo '✅ Repository already initialized (UPDATE_CODE=false)';
         fi &&
         cd /app &&
+        echo '🚀 Starting agent from entrypoint.sh...' &&
         exec bash /app/entrypoint.sh
       "
 
