@@ -431,8 +431,15 @@ async def register_tee():
 
     print(f"🔍 AGENT_DOMAIN: {agent_domain}")
 
-    app_id = agent_domain.split('-')[0] if '-' in agent_domain else agent_domain.split('.')[0]
-    dstack_domain = agent_domain.split('.', 1)[1] if '.' in agent_domain else ''
+    # Parse domain: format is {app_id}-{port}.{dstack_domain} or localhost:port for dev
+    if '-' in agent_domain and '.' in agent_domain:
+        # Production: app_id-port.dstack_domain
+        app_id = agent_domain.split('-')[0]
+        dstack_domain = agent_domain.split('.', 1)[1]
+    else:
+        # Local dev: localhost:port or just domain
+        app_id = agent_domain.split(':')[0].split('.')[0]
+        dstack_domain = os.getenv('DSTACK_GATEWAY_DOMAIN', 'local.dev')
 
     print(f"🔍 app_id: {app_id}")
     print(f"🔍 dstack_domain: {dstack_domain}")
