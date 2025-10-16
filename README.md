@@ -61,6 +61,7 @@ git rev-parse HEAD
 # 3. Deploy on phala.com with docker-compose.yml
 # 4. Set secrets: GITHUB_REPO, GIT_COMMIT_HASH, AGENT_SALT
 # 5. Launch CVM and fund your agent
+npx phala deploy -n erc-8004-tee-agent -c docker-compose.yml -e .env
 ```
 
 ## Developer Workflow
