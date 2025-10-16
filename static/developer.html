@@ -109,6 +109,47 @@
                         Get Attestation
                     </button>
                 </div>
+
+                <!-- AI Code Generation (NEW) -->
+                <div class="bg-gradient-to-br from-purple-900 to-gray-800 rounded-lg p-6 border border-purple-700">
+                    <h3 class="text-xl font-bold mb-3 flex items-center gap-2">
+                        <span class="bg-purple-600 px-2 py-1 rounded text-xs">AI</span>
+                        Generate & Execute Code
+                    </h3>
+                    <p class="text-sm text-gray-400 mb-4">Use AI to generate code from natural language (with TEE attestation)</p>
+
+                    <!-- Language Selector -->
+                    <select id="aiLanguage" class="w-full bg-gray-700 text-white p-3 rounded mb-2">
+                        <option value="python">Python</option>
+                        <option value="javascript">JavaScript</option>
+                    </select>
+
+                    <!-- Description -->
+                    <textarea
+                        id="aiDescription"
+                        placeholder="Describe what you want the code to do... (e.g., 'Calculate the factorial of 10 and print the result')"
+                        class="w-full bg-gray-700 text-white p-3 rounded mb-2 h-32"
+                    ></textarea>
+
+                    <!-- Advanced Options (Collapsible) -->
+                    <details class="mb-3">
+                        <summary class="text-sm text-purple-400 cursor-pointer mb-2">Advanced Options</summary>
+                        <div class="bg-gray-700 p-3 rounded space-y-2">
+                            <label class="flex items-center gap-2 text-sm">
+                                <input type="checkbox" id="aiAttestation" checked class="rounded">
+                                Include TEE Attestation
+                            </label>
+                            <div>
+                                <label class="text-sm text-gray-400">Max Retries</label>
+                                <input type="number" id="aiRetries" value="2" min="0" max="5" class="w-full bg-gray-600 text-white p-2 rounded text-sm">
+                            </div>
+                        </div>
+                    </details>
+
+                    <button onclick="generateCode()" class="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded w-full font-bold">
+                        🤖 Generate & Execute
+                    </button>
+                </div>
             </div>
 
             <!-- Right Column - Response -->
@@ -152,6 +193,22 @@
                 <div>
                     <h4 class="text-lg font-bold text-blue-400 mb-2">GET /.well-known/agent-card.json</h4>
                     <pre class="bg-gray-900 p-4 rounded text-sm overflow-x-auto"><code>curl http://localhost:8000/.well-known/agent-card.json</code></pre>
+                </div>
+                <div>
+                    <h4 class="text-lg font-bold text-purple-400 mb-2">POST /api/process (AI Code Generation)</h4>
+                    <pre class="bg-gray-900 p-4 rounded text-sm overflow-x-auto"><code>curl -X POST http://localhost:8000/api/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_id": "ai-gen-1",
+    "query": "Calculate factorial of 10",
+    "data": {
+      "type": "ai_generate_and_execute",
+      "description": "Calculate the factorial of 10 and print the result",
+      "language": "python",
+      "max_retries": 2,
+      "include_attestation": true
+    }
+  }'</code></pre>
                 </div>
             </div>
         </div>
@@ -284,6 +341,128 @@
             } else {
                 displayResponse({ error: result.error }, false);
                 UIUtils.showToast('Failed to get attestation: ' + result.error, 'error');
+            }
+        }
+
+        async function generateCode() {
+            const description = document.getElementById('aiDescription').value.trim();
+            const language = document.getElementById('aiLanguage').value;
+            const includeAttestation = document.getElementById('aiAttestation').checked;
+            const maxRetries = parseInt(document.getElementById('aiRetries').value) || 2;
+
+            if (!description) {
+                UIUtils.showToast('Please describe what code you want to generate', 'warning');
+                return;
+            }
+
+            const taskId = 'ai-gen-' + Date.now();
+
+            UIUtils.showToast('Generating code with AI...', 'info');
+
+            const result = await apiClient.processTask(taskId, description, {
+                type: 'ai_generate_and_execute',
+                description: description,
+                language: language,
+                max_retries: maxRetries,
+                include_attestation: includeAttestation
+            });
+
+            if (result.success && result.data.success) {
+                displayAIResponse(result.data);
+                UIUtils.showToast('Code generated and executed successfully!', 'success');
+            } else {
+                const error = result.data?.error || result.error || 'Unknown error';
+                displayResponse(result.data || { error }, false);
+                UIUtils.showToast('Failed: ' + error, 'error');
+            }
+        }
+
+        function displayAIResponse(data) {
+            const responseDiv = document.getElementById('response');
+            const timestamp = new Date().toLocaleTimeString();
+
+            const hasAttestation = data.attestation && !data.attestation.error;
+            const retriesText = data.retries_used > 0 ? ` (${data.retries_used} retries)` : '';
+
+            responseDiv.innerHTML = `
+                <div class="mb-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-green-400 font-bold">✓ ${data.message}${retriesText}</span>
+                        <span class="text-gray-500 text-sm">${timestamp}</span>
+                    </div>
+                    ${hasAttestation ? '<span class="text-purple-400 text-xs">🔒 TEE Attested</span>' : ''}
+                </div>
+
+                <!-- Generated Code -->
+                <div class="mb-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <h4 class="text-sm font-bold text-purple-400">Generated Code (${data.language})</h4>
+                        <button onclick="copyCode()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">
+                            Copy
+                        </button>
+                    </div>
+                    <pre id="generatedCode" class="bg-gray-950 p-3 rounded text-sm overflow-x-auto border border-gray-700"><code>${escapeHtml(data.generated_code)}</code></pre>
+                </div>
+
+                <!-- Output -->
+                <div class="mb-4">
+                    <h4 class="text-sm font-bold text-green-400 mb-2">Execution Output</h4>
+                    <pre class="bg-gray-950 p-3 rounded text-sm overflow-x-auto border border-gray-700">${escapeHtml(data.output || '(no output)')}</pre>
+                    ${data.result ? `<div class="mt-2"><span class="text-xs text-gray-400">Return Value:</span> <code class="text-blue-400">${escapeHtml(String(data.result))}</code></div>` : ''}
+                </div>
+
+                ${data.attestation && hasAttestation ? `
+                <!-- Attestation -->
+                <details class="mb-2">
+                    <summary class="text-sm font-bold text-purple-400 cursor-pointer mb-2">
+                        TEE Attestation Data (Click to expand)
+                    </summary>
+                    <div class="bg-gray-950 p-3 rounded text-xs overflow-x-auto">
+                        <p class="mb-2"><span class="text-gray-400">Model:</span> ${data.attestation.inference?.model || 'N/A'}</p>
+                        <p class="mb-2"><span class="text-gray-400">Timestamp:</span> ${new Date((data.attestation.inference?.timestamp || 0) * 1000).toLocaleString()}</p>
+                        <p class="mb-2"><span class="text-gray-400">Response Hash:</span> <span class="font-mono text-xs">${data.attestation.inference?.response_hash?.substring(0, 16)}...</span></p>
+                        <button onclick="downloadAttestation()" class="mt-2 bg-purple-600 hover:bg-purple-700 px-3 py-1 rounded text-sm">
+                            Download Attestation
+                        </button>
+                    </div>
+                </details>
+                ` : ''}
+
+                <!-- Full Response -->
+                <details>
+                    <summary class="text-sm text-gray-400 cursor-pointer">Full JSON Response</summary>
+                    <pre class="text-xs mt-2 overflow-x-auto">${JSON.stringify(data, null, 2)}</pre>
+                </details>
+            `;
+
+            // Store attestation globally for download
+            window.lastAttestation = data.attestation;
+            window.lastGeneratedCode = data.generated_code;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function copyCode() {
+            if (window.lastGeneratedCode) {
+                navigator.clipboard.writeText(window.lastGeneratedCode);
+                UIUtils.showToast('Code copied to clipboard!', 'success');
+            }
+        }
+
+        function downloadAttestation() {
+            if (window.lastAttestation) {
+                const blob = new Blob([JSON.stringify(window.lastAttestation, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `attestation-${Date.now()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+                UIUtils.showToast('Attestation downloaded!', 'success');
             }
         }
 
