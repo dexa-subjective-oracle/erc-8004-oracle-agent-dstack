@@ -168,6 +168,12 @@ async def dashboard_page():
     return FileResponse(os.path.join(static_path, 'dashboard.html'))
 
 
+@app.get("/developer")
+async def developer_page():
+    """Developer API interaction page."""
+    return FileResponse(os.path.join(static_path, 'developer.html'))
+
+
 @app.get("/api/wallet")
 async def get_wallet():
     """Get wallet address and balance for funding."""
@@ -331,9 +337,12 @@ async def get_attestation():
             "timestamp": datetime.utcnow().isoformat()
         }
 
-        # Include full quote if requested
+        # Include full quote and event log
         if attestation.get("quote"):
-            response["quote_preview"] = attestation["quote"][:100] + "..." if len(attestation["quote"]) > 100 else attestation["quote"]
+            response["quote"] = attestation["quote"]
+
+        if attestation.get("event_log"):
+            response["event_log"] = attestation["event_log"]
 
         return response
 

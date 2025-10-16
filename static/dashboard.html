@@ -5,10 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TEE Agent Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/static/wallet-utils.js"></script>
 </head>
 <body class="bg-gray-900 text-white">
     <div class="container mx-auto px-4 py-8 max-w-6xl">
-        <h1 class="text-4xl font-bold mb-8 text-center">TEE Agent Dashboard</h1>
+        <div class="flex items-center justify-between mb-8">
+            <h1 class="text-4xl font-bold">TEE Agent Dashboard</h1>
+            <div class="flex gap-2">
+                <a href="/funding" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">Funding</a>
+                <a href="/developer" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm">Developer API</a>
+            </div>
+        </div>
 
         <div class="grid gap-6">
             <!-- Step 1: Wallet -->
@@ -58,6 +65,8 @@
     </div>
 
     <script>
+        const apiClient = new APIClient();
+
         let state = {
             wallet: null,
             registration: null,
@@ -65,12 +74,19 @@
         };
 
         async function loadWallet() {
-            const res = await fetch('/api/wallet');
-            state.wallet = await res.json();
-
             const step1 = document.getElementById('step1');
             const content = document.getElementById('step1-content');
             const status = document.getElementById('step1-status');
+
+            const result = await apiClient.getWallet();
+
+            if (!result.success) {
+                UIUtils.showError('step1-content', result.error, loadWallet);
+                setTimeout(loadWallet, 5000);
+                return;
+            }
+
+            state.wallet = result.data;
 
             if (state.wallet.funded) {
                 step1.className = 'bg-gray-800 rounded-lg p-6';
@@ -79,7 +95,7 @@
                 content.innerHTML = `
                     <p class="text-green-400 mb-2">✓ Wallet Funded</p>
                     <p class="text-sm text-gray-400">Address: ${state.wallet.address}</p>
-                    <p class="text-sm text-gray-400">Balance: ${parseFloat(state.wallet.balance).toFixed(4)} ETH</p>
+                    <p class="text-sm text-gray-400">Balance: ${UIUtils.formatEth(state.wallet.balance)} ETH</p>
                 `;
                 document.getElementById('step2').classList.remove('opacity-50');
                 checkRegistration();
@@ -87,7 +103,7 @@
                 content.innerHTML = `
                     <p class="text-yellow-400 mb-2">Waiting for funds...</p>
                     <p class="text-sm text-gray-400">Address: ${state.wallet.address}</p>
-                    <p class="text-sm text-gray-400">Balance: ${state.wallet.balance} ETH</p>
+                    <p class="text-sm text-gray-400">Balance: ${UIUtils.formatEth(state.wallet.balance)} ETH</p>
                     <a href="/funding" class="text-blue-400 hover:text-blue-300 text-sm">→ Fund Wallet</a>
                 `;
                 setTimeout(loadWallet, 5000);
@@ -95,56 +111,55 @@
         }
 
         async function checkRegistration() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
+            const step2 = document.getElementById('step2');
+            const content = document.getElementById('step2-content');
+            const status = document.getElementById('step2-status');
 
-                const step2 = document.getElementById('step2');
-                const content = document.getElementById('step2-content');
-                const status = document.getElementById('step2-status');
+            const result = await apiClient.getStatus();
 
-                console.log('Registration check:', data.agent);
+            if (!result.success) {
+                UIUtils.showError('step2-content', result.error, checkRegistration);
+                return;
+            }
 
-                if (data.agent.is_registered && data.agent.agent_id) {
-                    step2.className = 'bg-gray-800 rounded-lg p-6';
-                    status.className = 'w-8 h-8 rounded-full bg-green-600 flex items-center justify-center';
-                    status.innerHTML = '✓';
-                    content.innerHTML = `
-                        <p class="text-green-400 mb-2">✓ Agent Registered</p>
-                        <p class="text-sm text-gray-400">Agent ID: ${data.agent.agent_id}</p>
-                        <p class="text-sm text-gray-400">Domain: ${data.agent.domain}</p>
-                    `;
-                    state.registration = data.agent;
-                    document.getElementById('step3').classList.remove('opacity-50');
-                    checkTEE();
-                } else {
-                    content.innerHTML = `
-                        <p class="text-sm text-gray-400 mb-2">Address: ${data.agent.address}</p>
-                        <button onclick="register()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded">
-                            Register On-Chain
-                        </button>
-                    `;
-                }
-            } catch (err) {
-                console.error('Registration check failed:', err);
-                const content = document.getElementById('step2-content');
+            const data = result.data;
+            console.log('Registration check:', data.agent);
+
+            if (data.agent.is_registered && data.agent.agent_id) {
+                step2.className = 'bg-gray-800 rounded-lg p-6';
+                status.className = 'w-8 h-8 rounded-full bg-green-600 flex items-center justify-center';
+                status.innerHTML = '✓';
                 content.innerHTML = `
-                    <p class="text-red-400 mb-2">Error checking registration</p>
-                    <p class="text-sm text-gray-300 mb-2">${err.message}</p>
-                    <button onclick="checkRegistration()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm">
-                        Retry
+                    <p class="text-green-400 mb-2">✓ Agent Registered</p>
+                    <p class="text-sm text-gray-400">Agent ID: ${data.agent.agent_id}</p>
+                    <p class="text-sm text-gray-400">Domain: ${data.agent.domain}</p>
+                `;
+                state.registration = data.agent;
+                document.getElementById('step3').classList.remove('opacity-50');
+                checkTEE();
+            } else {
+                content.innerHTML = `
+                    <p class="text-sm text-gray-400 mb-2">Address: ${data.agent.address}</p>
+                    <button onclick="register()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded">
+                        Register On-Chain
                     </button>
                 `;
             }
         }
 
         async function checkTEE() {
-            const res = await fetch('/api/status');
-            const data = await res.json();
-
             const step3 = document.getElementById('step3');
             const content = document.getElementById('step3-content');
             const status = document.getElementById('step3-status');
+
+            const result = await apiClient.getStatus();
+
+            if (!result.success) {
+                UIUtils.showError('step3-content', result.error, checkTEE);
+                return;
+            }
+
+            const data = result.data;
 
             if (data.agent.tee_verified) {
                 // Already verified - show checkmark
@@ -185,73 +200,40 @@
 
         async function registerTEE() {
             const content = document.getElementById('step3-content');
-            content.innerHTML = '<p class="text-yellow-400">Verifying TEE...</p>';
+            UIUtils.showLoading('step3-content', 'Verifying TEE...');
 
-            try {
-                const res = await fetch('/api/tee/register', {method: 'POST'});
-                const data = await res.json();
+            const result = await apiClient.registerTEE();
 
-                if (res.ok && data.success) {
-                    checkTEE();
-                } else {
-                    const errorMsg = data.detail || data.error || 'Unknown error';
-                    content.innerHTML = `
-                        <p class="text-red-400 mb-2">❌ TEE Verification Failed</p>
-                        <p class="text-sm text-gray-300 mb-2">${errorMsg}</p>
-                        <button onclick="registerTEE()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm">
-                            Retry
-                        </button>
-                    `;
-                }
-            } catch (err) {
-                content.innerHTML = `
-                    <p class="text-red-400 mb-2">❌ TEE Verification Failed</p>
-                    <p class="text-sm text-gray-300 mb-2">${err.message}</p>
-                    <button onclick="registerTEE()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm">
-                        Retry
-                    </button>
-                `;
+            if (result.success) {
+                UIUtils.showToast('TEE verified successfully!', 'success');
+                checkTEE();
+            } else {
+                UIUtils.showError('step3-content', result.error, registerTEE);
+                UIUtils.showToast('TEE verification failed: ' + result.error, 'error');
             }
         }
 
         async function register() {
             const content = document.getElementById('step2-content');
-            content.innerHTML = '<p class="text-yellow-400">Registering...</p>';
+            UIUtils.showLoading('step2-content', 'Registering on-chain...');
 
-            try {
-                const res = await fetch('/api/register', {method: 'POST'});
-                const data = await res.json();
+            const result = await apiClient.registerAgent();
 
-                console.log('Registration response:', data);
+            console.log('Registration response:', result);
 
-                if (res.ok && data.success) {
-                    content.innerHTML = `
-                        <p class="text-green-400 mb-2">✓ Registration Transaction Complete</p>
-                        <p class="text-sm text-gray-400">Agent ID: ${data.agent_id}</p>
-                        <p class="text-sm text-gray-400">Verifying...</p>
-                    `;
-                    // Wait a moment for blockchain state to update, then check
-                    setTimeout(checkRegistration, 2000);
-                } else {
-                    // Show error from API
-                    const errorMsg = data.detail || data.error || 'Unknown error';
-                    content.innerHTML = `
-                        <p class="text-red-400 mb-2">❌ Registration Failed</p>
-                        <p class="text-sm text-gray-300 mb-2">${errorMsg}</p>
-                        <button onclick="register()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm">
-                            Retry
-                        </button>
-                    `;
-                }
-            } catch (err) {
-                console.error('Registration error:', err);
+            if (result.success) {
+                const data = result.data;
                 content.innerHTML = `
-                    <p class="text-red-400 mb-2">❌ Registration Failed</p>
-                    <p class="text-sm text-gray-300 mb-2">${err.message}</p>
-                    <button onclick="register()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm">
-                        Retry
-                    </button>
+                    <p class="text-green-400 mb-2">✓ Registration Transaction Complete</p>
+                    <p class="text-sm text-gray-400">Agent ID: ${data.agent_id}</p>
+                    <p class="text-sm text-gray-400">Verifying...</p>
                 `;
+                UIUtils.showToast('Agent registered successfully!', 'success');
+                // Wait a moment for blockchain state to update, then check
+                setTimeout(checkRegistration, 2000);
+            } else {
+                UIUtils.showError('step2-content', result.error, register);
+                UIUtils.showToast('Registration failed: ' + result.error, 'error');
             }
         }
 

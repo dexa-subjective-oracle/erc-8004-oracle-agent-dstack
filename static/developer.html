@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TEE Agent - Developer API</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/static/wallet-utils.js"></script>
+</head>
+<body class="bg-gray-900 text-white">
+    <div class="container mx-auto px-4 py-8 max-w-7xl">
+        <!-- Header -->
+        <div class="mb-8">
+            <div class="flex items-center justify-between mb-4">
+                <h1 class="text-4xl font-bold">Developer API Playground</h1>
+                <div class="flex gap-2">
+                    <a href="/funding" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">Funding</a>
+                    <a href="/dashboard" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">Dashboard</a>
+                </div>
+            </div>
+            <p class="text-gray-400">Test and interact with the TEE Agent API endpoints</p>
+        </div>
+
+        <!-- Agent Status Card -->
+        <div class="bg-gray-800 rounded-lg p-6 mb-6">
+            <h2 class="text-2xl font-bold mb-4">Agent Status</h2>
+            <div id="agentStatus" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="text-center py-4">
+                    <div class="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500 mx-auto"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Left Column - API Endpoints -->
+            <div class="space-y-6">
+                <!-- Get Wallet Info -->
+                <div class="bg-gray-800 rounded-lg p-6">
+                    <h3 class="text-xl font-bold mb-3 flex items-center gap-2">
+                        <span class="bg-blue-600 px-2 py-1 rounded text-xs">GET</span>
+                        Wallet Info
+                    </h3>
+                    <p class="text-sm text-gray-400 mb-4">Get agent wallet address and balance</p>
+                    <button onclick="getWallet()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded w-full">
+                        Get Wallet
+                    </button>
+                </div>
+
+                <!-- Sign Message -->
+                <div class="bg-gray-800 rounded-lg p-6">
+                    <h3 class="text-xl font-bold mb-3 flex items-center gap-2">
+                        <span class="bg-green-600 px-2 py-1 rounded text-xs">POST</span>
+                        Sign Message
+                    </h3>
+                    <p class="text-sm text-gray-400 mb-4">Sign a message with TEE-derived key</p>
+                    <textarea
+                        id="signMessage"
+                        placeholder="Enter message to sign..."
+                        class="w-full bg-gray-700 text-white p-3 rounded mb-3 h-24"
+                    ></textarea>
+                    <button onclick="signMessage()" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded w-full">
+                        Sign Message
+                    </button>
+                </div>
+
+                <!-- Process Task -->
+                <div class="bg-gray-800 rounded-lg p-6">
+                    <h3 class="text-xl font-bold mb-3 flex items-center gap-2">
+                        <span class="bg-green-600 px-2 py-1 rounded text-xs">POST</span>
+                        Process Task
+                    </h3>
+                    <p class="text-sm text-gray-400 mb-4">Send a task to the agent</p>
+                    <input
+                        type="text"
+                        id="taskId"
+                        placeholder="Task ID (auto-generated if empty)"
+                        class="w-full bg-gray-700 text-white p-3 rounded mb-2"
+                    />
+                    <textarea
+                        id="taskQuery"
+                        placeholder="Enter your query..."
+                        class="w-full bg-gray-700 text-white p-3 rounded mb-3 h-24"
+                    ></textarea>
+                    <button onclick="processTask()" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded w-full">
+                        Process Task
+                    </button>
+                </div>
+
+                <!-- Get Agent Card -->
+                <div class="bg-gray-800 rounded-lg p-6">
+                    <h3 class="text-xl font-bold mb-3 flex items-center gap-2">
+                        <span class="bg-blue-600 px-2 py-1 rounded text-xs">GET</span>
+                        Agent Card
+                    </h3>
+                    <p class="text-sm text-gray-400 mb-4">Get ERC-8004 compliant agent card</p>
+                    <button onclick="getAgentCard()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded w-full">
+                        Get Agent Card
+                    </button>
+                </div>
+
+                <!-- Get Attestation -->
+                <div class="bg-gray-800 rounded-lg p-6">
+                    <h3 class="text-xl font-bold mb-3 flex items-center gap-2">
+                        <span class="bg-blue-600 px-2 py-1 rounded text-xs">GET</span>
+                        TEE Attestation
+                    </h3>
+                    <p class="text-sm text-gray-400 mb-4">Get TEE attestation information</p>
+                    <button onclick="getAttestation()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded w-full">
+                        Get Attestation
+                    </button>
+                </div>
+            </div>
+
+            <!-- Right Column - Response -->
+            <div class="bg-gray-800 rounded-lg p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-xl font-bold">API Response</h3>
+                    <button onclick="clearResponse()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm">
+                        Clear
+                    </button>
+                </div>
+                <div id="response" class="bg-gray-900 p-4 rounded overflow-auto" style="max-height: calc(100vh - 200px);">
+                    <p class="text-gray-500 italic">Response will appear here...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Code Examples -->
+        <div class="mt-6 bg-gray-800 rounded-lg p-6">
+            <h2 class="text-2xl font-bold mb-4">API Documentation</h2>
+            <div class="space-y-4">
+                <div>
+                    <h4 class="text-lg font-bold text-blue-400 mb-2">GET /api/wallet</h4>
+                    <pre class="bg-gray-900 p-4 rounded text-sm overflow-x-auto"><code>curl http://localhost:8000/api/wallet</code></pre>
+                </div>
+                <div>
+                    <h4 class="text-lg font-bold text-green-400 mb-2">POST /api/sign</h4>
+                    <pre class="bg-gray-900 p-4 rounded text-sm overflow-x-auto"><code>curl -X POST http://localhost:8000/api/sign \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello World"}'</code></pre>
+                </div>
+                <div>
+                    <h4 class="text-lg font-bold text-green-400 mb-2">POST /api/process</h4>
+                    <pre class="bg-gray-900 p-4 rounded text-sm overflow-x-auto"><code>curl -X POST http://localhost:8000/api/process \
+  -H "Content-Type: application/json" \
+  -d '{"task_id": "task-1", "query": "Analyze this data", "data": {}}'</code></pre>
+                </div>
+                <div>
+                    <h4 class="text-lg font-bold text-blue-400 mb-2">GET /api/card</h4>
+                    <pre class="bg-gray-900 p-4 rounded text-sm overflow-x-auto"><code>curl http://localhost:8000/api/card</code></pre>
+                </div>
+                <div>
+                    <h4 class="text-lg font-bold text-blue-400 mb-2">GET /.well-known/agent-card.json</h4>
+                    <pre class="bg-gray-900 p-4 rounded text-sm overflow-x-auto"><code>curl http://localhost:8000/.well-known/agent-card.json</code></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const apiClient = new APIClient();
+
+        let agentStatus = null;
+
+        async function loadAgentStatus() {
+            const statusDiv = document.getElementById('agentStatus');
+
+            const result = await apiClient.getStatus();
+
+            if (result.success) {
+                agentStatus = result.data;
+                statusDiv.innerHTML = `
+                    <div class="bg-gray-700 p-4 rounded">
+                        <p class="text-sm text-gray-400">Address</p>
+                        <p class="font-mono text-sm">${agentStatus.agent.address}</p>
+                    </div>
+                    <div class="bg-gray-700 p-4 rounded">
+                        <p class="text-sm text-gray-400">Agent ID</p>
+                        <p class="font-mono">${agentStatus.agent.agent_id || 'Not registered'}</p>
+                    </div>
+                    <div class="bg-gray-700 p-4 rounded">
+                        <p class="text-sm text-gray-400">Status</p>
+                        <div class="flex items-center gap-2 mt-1">
+                            <div class="w-2 h-2 rounded-full ${agentStatus.agent.is_registered ? 'bg-green-500' : 'bg-yellow-500'}"></div>
+                            <span>${agentStatus.agent.is_registered ? 'Registered' : 'Not Registered'}</span>
+                        </div>
+                        ${agentStatus.agent.tee_verified ? '<div class="flex items-center gap-2 mt-1"><div class="w-2 h-2 rounded-full bg-green-500"></div><span>TEE Verified</span></div>' : ''}
+                    </div>
+                `;
+            } else {
+                statusDiv.innerHTML = `<p class="text-red-400 col-span-3">Failed to load status: ${result.error}</p>`;
+            }
+        }
+
+        function displayResponse(data, success = true) {
+            const responseDiv = document.getElementById('response');
+            const timestamp = new Date().toLocaleTimeString();
+
+            const color = success ? 'text-green-400' : 'text-red-400';
+            const statusText = success ? '✓ Success' : '❌ Error';
+
+            responseDiv.innerHTML = `
+                <div class="mb-2 flex items-center justify-between">
+                    <span class="${color} font-bold">${statusText}</span>
+                    <span class="text-gray-500 text-sm">${timestamp}</span>
+                </div>
+                <pre class="text-sm overflow-x-auto">${JSON.stringify(data, null, 2)}</pre>
+            `;
+        }
+
+        function clearResponse() {
+            document.getElementById('response').innerHTML = '<p class="text-gray-500 italic">Response will appear here...</p>';
+        }
+
+        async function getWallet() {
+            const result = await apiClient.getWallet();
+
+            if (result.success) {
+                displayResponse(result.data, true);
+                UIUtils.showToast('Wallet info loaded', 'success');
+            } else {
+                displayResponse({ error: result.error }, false);
+                UIUtils.showToast('Failed to get wallet: ' + result.error, 'error');
+            }
+        }
+
+        async function signMessage() {
+            const message = document.getElementById('signMessage').value.trim();
+
+            if (!message) {
+                UIUtils.showToast('Please enter a message to sign', 'warning');
+                return;
+            }
+
+            const result = await apiClient.signMessage(message);
+
+            if (result.success) {
+                displayResponse(result.data, true);
+                UIUtils.showToast('Message signed successfully', 'success');
+            } else {
+                displayResponse({ error: result.error }, false);
+                UIUtils.showToast('Failed to sign message: ' + result.error, 'error');
+            }
+        }
+
+        async function processTask() {
+            const taskId = document.getElementById('taskId').value.trim() || 'task-' + Date.now();
+            const query = document.getElementById('taskQuery').value.trim();
+
+            if (!query) {
+                UIUtils.showToast('Please enter a query', 'warning');
+                return;
+            }
+
+            const result = await apiClient.processTask(taskId, query);
+
+            if (result.success) {
+                displayResponse(result.data, true);
+                UIUtils.showToast('Task processed successfully', 'success');
+            } else {
+                displayResponse({ error: result.error }, false);
+                UIUtils.showToast('Failed to process task: ' + result.error, 'error');
+            }
+        }
+
+        async function getAgentCard() {
+            const result = await apiClient.getAgentCard();
+
+            if (result.success) {
+                displayResponse(result.data, true);
+                UIUtils.showToast('Agent card loaded', 'success');
+            } else {
+                displayResponse({ error: result.error }, false);
+                UIUtils.showToast('Failed to get agent card: ' + result.error, 'error');
+            }
+        }
+
+        async function getAttestation() {
+            const result = await apiClient.getAttestation();
+
+            if (result.success) {
+                displayResponse(result.data, true);
+                UIUtils.showToast('Attestation loaded', 'success');
+            } else {
+                displayResponse({ error: result.error }, false);
+                UIUtils.showToast('Failed to get attestation: ' + result.error, 'error');
+            }
+        }
+
+        // Load agent status on page load
+        loadAgentStatus();
+    </script>
+</body>
+</html>
