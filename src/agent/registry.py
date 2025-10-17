@@ -235,8 +235,28 @@ class RegistryClient:
                         }
                     except Exception as token_err:
                         print(f"⚠️  Error getting token by index: {token_err}")
-                        # Fallback: balance > 0 means registered, even if we can't get the exact token ID
-                        print(f"⚠️  Balance is {balance} but couldn't retrieve token ID")
+                        # Fallback: Try brute force search for token IDs
+                        print(f"🔍 Attempting brute force search for token ID (balance: {balance})...")
+                        for potential_id in range(1, 1000):  # Search first 1000 token IDs
+                            try:
+                                owner = self.identity_contract.functions.ownerOf(potential_id).call()
+                                if owner.lower() == checksum_address.lower():
+                                    print(f"✅ Found agent ID {potential_id} via brute force")
+                                    return {
+                                        "registered": True,
+                                        "agent_id": potential_id,
+                                        "agent_address": agent_address
+                                    }
+                            except:
+                                continue
+
+                        # If we still can't find it, return registered but without agent_id
+                        print(f"⚠️  Balance is {balance} but couldn't find token ID after search")
+                        return {
+                            "registered": True,
+                            "agent_id": None,  # Unknown, but we know they're registered
+                            "agent_address": agent_address
+                        }
                 else:
                     print(f"⚠️  Address has no NFTs (balance: 0)")
         except Exception as e:

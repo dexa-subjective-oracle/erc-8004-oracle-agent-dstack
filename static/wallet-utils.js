@@ -4,11 +4,12 @@
  */
 
 class WalletManager {
-    constructor() {
+    constructor(chainConfig = null) {
         this.provider = null;
         this.signer = null;
         this.address = null;
-        this.chainId = 84532; // Base Sepolia
+        this.chainConfig = chainConfig; // Will be set dynamically from API
+        this.chainId = chainConfig ? chainConfig.chain_id : null;
         this.connected = false;
     }
 
@@ -66,13 +67,17 @@ class WalletManager {
     }
 
     /**
-     * Switch to Base Sepolia network
+     * Switch to configured network
      */
     async switchNetwork() {
+        if (!this.chainConfig) {
+            throw new Error('Chain configuration not loaded');
+        }
+
         try {
             await window.ethereum.request({
                 method: 'wallet_switchEthereumChain',
-                params: [{ chainId: '0x14a34' }], // 84532 in hex
+                params: [{ chainId: this.chainConfig.chain_id_hex }],
             });
         } catch (switchError) {
             // This error code indicates that the chain has not been added to MetaMask
@@ -81,19 +86,15 @@ class WalletManager {
                     await window.ethereum.request({
                         method: 'wallet_addEthereumChain',
                         params: [{
-                            chainId: '0x14a34',
-                            chainName: 'Base Sepolia',
-                            nativeCurrency: {
-                                name: 'Ether',
-                                symbol: 'ETH',
-                                decimals: 18
-                            },
-                            rpcUrls: ['https://sepolia.base.org'],
-                            blockExplorerUrls: ['https://sepolia.basescan.org']
+                            chainId: this.chainConfig.chain_id_hex,
+                            chainName: this.chainConfig.chain_name,
+                            nativeCurrency: this.chainConfig.native_currency,
+                            rpcUrls: this.chainConfig.rpc_urls,
+                            blockExplorerUrls: this.chainConfig.block_explorer_urls
                         }]
                     });
                 } catch (addError) {
-                    throw new Error('Failed to add Base Sepolia network: ' + addError.message);
+                    throw new Error(`Failed to add ${this.chainConfig.chain_name} network: ` + addError.message);
                 }
             } else {
                 throw new Error('Failed to switch network: ' + switchError.message);
@@ -220,6 +221,13 @@ class APIClient {
             method: 'POST',
             body: JSON.stringify(body),
         });
+    }
+
+    /**
+     * Get chain configuration
+     */
+    async getChainConfig() {
+        return this.get('/api/chain-config');
     }
 
     /**

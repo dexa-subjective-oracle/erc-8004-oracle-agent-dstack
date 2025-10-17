@@ -226,11 +226,11 @@
                 content.innerHTML = `
                     <p class="text-green-400 mb-2">✓ Registration Transaction Complete</p>
                     <p class="text-sm text-gray-400">Agent ID: ${data.agent_id}</p>
-                    <p class="text-sm text-gray-400">Verifying...</p>
+                    <p class="text-sm text-gray-400">Updating status...</p>
                 `;
                 UIUtils.showToast('Agent registered successfully!', 'success');
-                // Wait a moment for blockchain state to update, then check
-                setTimeout(checkRegistration, 2000);
+                // Wait for blockchain confirmation before checking
+                setTimeout(checkRegistration, 3000);
             } else {
                 UIUtils.showError('step2-content', result.error, register);
                 UIUtils.showToast('Registration failed: ' + result.error, 'error');
