@@ -98,12 +98,16 @@ async def startup_event():
     # Create agent configuration
     from src.agent.base import AgentRole
 
+    # Load chain configuration from environment
+    chain_id = int(os.getenv("CHAIN_ID", "84532"))
+    rpc_url = os.getenv("RPC_URL", "https://sepolia.base.org")
+
     config = AgentConfig(
         domain=domain,
         salt=salt,
         role=AgentRole.SERVER,
-        chain_id=84532,  # Base Sepolia
-        rpc_url="https://sepolia.base.org",
+        chain_id=chain_id,
+        rpc_url=rpc_url,
         use_tee_auth=True,
         private_key=tee_auth.private_key
     )
@@ -174,6 +178,86 @@ async def developer_page():
     return FileResponse(os.path.join(static_path, 'developer.html'))
 
 
+@app.get("/api/chain-config")
+async def get_chain_config():
+    """Get blockchain configuration for frontend."""
+    if not agent:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+
+    # Map chain IDs to their configurations
+    chain_configs = {
+        84532: {
+            "chain_id": 84532,
+            "chain_id_hex": "0x14a34",
+            "chain_name": "Base Sepolia",
+            "native_currency": {
+                "name": "Ether",
+                "symbol": "ETH",
+                "decimals": 18
+            },
+            "rpc_urls": ["https://sepolia.base.org"],
+            "block_explorer_urls": ["https://sepolia.basescan.org"],
+            "faucet_url": "https://www.alchemy.com/faucets/base-sepolia"
+        },
+        8453: {
+            "chain_id": 8453,
+            "chain_id_hex": "0x2105",
+            "chain_name": "Base Mainnet",
+            "native_currency": {
+                "name": "Ether",
+                "symbol": "ETH",
+                "decimals": 18
+            },
+            "rpc_urls": ["https://mainnet.base.org"],
+            "block_explorer_urls": ["https://basescan.org"],
+            "faucet_url": None
+        },
+        11155111: {
+            "chain_id": 11155111,
+            "chain_id_hex": "0xaa36a7",
+            "chain_name": "Ethereum Sepolia",
+            "native_currency": {
+                "name": "Ether",
+                "symbol": "ETH",
+                "decimals": 18
+            },
+            "rpc_urls": ["https://rpc.sepolia.org"],
+            "block_explorer_urls": ["https://sepolia.etherscan.io"],
+            "faucet_url": "https://sepoliafaucet.com"
+        },
+        1: {
+            "chain_id": 1,
+            "chain_id_hex": "0x1",
+            "chain_name": "Ethereum Mainnet",
+            "native_currency": {
+                "name": "Ether",
+                "symbol": "ETH",
+                "decimals": 18
+            },
+            "rpc_urls": ["https://eth.llamarpc.com"],
+            "block_explorer_urls": ["https://etherscan.io"],
+            "faucet_url": None
+        }
+    }
+
+    chain_id = agent.config.chain_id
+    config = chain_configs.get(chain_id, {
+        "chain_id": chain_id,
+        "chain_id_hex": hex(chain_id),
+        "chain_name": f"Chain {chain_id}",
+        "native_currency": {
+            "name": "Ether",
+            "symbol": "ETH",
+            "decimals": 18
+        },
+        "rpc_urls": [agent.config.rpc_url],
+        "block_explorer_urls": [],
+        "faucet_url": None
+    })
+
+    return config
+
+
 @app.get("/api/wallet")
 async def get_wallet():
     """Get wallet address and balance for funding."""
@@ -185,13 +269,22 @@ async def get_wallet():
     balance_eth = agent._registry_client.w3.from_wei(balance_wei, 'ether')
     min_balance = 0.001  # Minimum ETH for gas
 
+    # Get chain config dynamically
+    chain_configs = {
+        84532: "Base Sepolia",
+        8453: "Base Mainnet",
+        11155111: "Ethereum Sepolia",
+        1: "Ethereum Mainnet"
+    }
+    chain_name = chain_configs.get(agent.config.chain_id, f"Chain {agent.config.chain_id}")
+
     return {
         "address": agent_address,
         "balance": str(balance_eth),
         "balance_wei": str(balance_wei),
         "qr_code_data": f"ethereum:{agent_address}?chainId={agent.config.chain_id}",
         "chain_id": agent.config.chain_id,
-        "chain_name": "Base Sepolia",
+        "chain_name": chain_name,
         "funded": float(balance_eth) >= min_balance,
         "minimum_balance": str(min_balance)
     }
@@ -205,21 +298,26 @@ async def get_status():
 
     agent_address = await agent._get_agent_address()
 
-    # Check on-chain registration (ERC-721 based, check by address only)
-    address_check = await agent._registry_client.check_agent_registration(agent_address=agent_address)
-
     is_registered = False
     agent_id = None
     tee_verified = False
 
+    # Always check on-chain registration to prevent spam registrations
+    address_check = await agent._registry_client.check_agent_registration(agent_address=agent_address)
+
     if address_check["registered"]:
         is_registered = True
         agent_id = address_check["agent_id"]
+        # Update in-memory state
         agent.agent_id = agent_id
         agent.is_registered = True
 
         if tee_verifier:
             tee_verified = await tee_verifier.check_tee_registered(agent_id, agent_address)
+    else:
+        # Clear in-memory state if not registered on-chain
+        agent.agent_id = None
+        agent.is_registered = False
 
     return {
         "status": "operational",

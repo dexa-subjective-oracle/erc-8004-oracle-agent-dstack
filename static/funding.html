@@ -55,17 +55,17 @@
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <p class="text-gray-400 text-sm">Chain</p>
-                        <p id="chainName" class="font-mono">Base Sepolia</p>
+                        <p id="chainName" class="font-mono text-gray-500">Loading...</p>
                     </div>
                     <div>
                         <p class="text-gray-400 text-sm">Chain ID</p>
-                        <p id="chainId" class="font-mono">84532</p>
+                        <p id="chainId" class="font-mono text-gray-500">Loading...</p>
                     </div>
                 </div>
                 <div class="mt-4">
                     <p class="text-gray-400 text-sm mb-2">Get testnet ETH:</p>
-                    <a href="https://www.alchemy.com/faucets/base-sepolia" target="_blank"
-                       class="text-blue-400 hover:text-blue-300">Base Sepolia Faucet →</a>
+                    <a href="#" target="_blank"
+                       class="text-blue-400 hover:text-blue-300">Faucet →</a>
                 </div>
             </div>
 
@@ -132,11 +132,27 @@
     <script>
         let walletData = null;
         let pollInterval = null;
-        const walletManager = new WalletManager();
+        let chainConfig = null;
+        let walletManager = null;
         const apiClient = new APIClient();
+
+        async function initializeChainConfig() {
+            const result = await apiClient.getChainConfig();
+            if (!result.success) {
+                throw new Error(result.error);
+            }
+            chainConfig = result.data;
+            return chainConfig;
+        }
 
         async function loadWallet() {
             try {
+                // Load chain config first
+                chainConfig = await initializeChainConfig();
+
+                // Initialize wallet manager with chain config
+                walletManager = new WalletManager(chainConfig);
+
                 const result = await apiClient.getWallet();
 
                 if (!result.success) {
@@ -146,9 +162,27 @@
                 walletData = result.data;
 
                 document.getElementById('address').textContent = walletData.address;
-                document.getElementById('chainName').textContent = walletData.chain_name;
-                document.getElementById('chainId').textContent = walletData.chain_id;
+
+                // Update chain info and remove loading style
+                const chainNameEl = document.getElementById('chainName');
+                chainNameEl.textContent = walletData.chain_name;
+                chainNameEl.classList.remove('text-gray-500');
+
+                const chainIdEl = document.getElementById('chainId');
+                chainIdEl.textContent = walletData.chain_id;
+                chainIdEl.classList.remove('text-gray-500');
+
                 document.getElementById('minBalance').textContent = walletData.minimum_balance;
+
+                // Update faucet link dynamically
+                if (chainConfig.faucet_url) {
+                    // Find the faucet link in the Network Info section
+                    const faucetLink = document.querySelector('.bg-gray-800 a.text-blue-400');
+                    if (faucetLink) {
+                        faucetLink.href = chainConfig.faucet_url;
+                        faucetLink.textContent = `${chainConfig.chain_name} Faucet →`;
+                    }
+                }
 
                 new QRCode(document.getElementById('qrcode'), {
                     text: walletData.qr_code_data,
@@ -256,9 +290,14 @@
 
                 const txHash = await walletManager.sendTransaction(walletData.address, amount);
 
+                // Build block explorer URL dynamically
+                const explorerUrl = chainConfig.block_explorer_urls && chainConfig.block_explorer_urls[0]
+                    ? `${chainConfig.block_explorer_urls[0]}/tx/${txHash}`
+                    : `#`;
+
                 statusEl.innerHTML = `
                     <p class="text-green-400 mb-2">✓ Transaction Sent!</p>
-                    <p class="text-sm text-gray-400">Hash: <a href="https://sepolia.basescan.org/tx/${txHash}" target="_blank" class="text-blue-400 hover:text-blue-300">${UIUtils.formatAddress(txHash)}</a></p>
+                    <p class="text-sm text-gray-400">Hash: <a href="${explorerUrl}" target="_blank" class="text-blue-400 hover:text-blue-300">${UIUtils.formatAddress(txHash)}</a></p>
                     <p class="text-sm text-gray-400 mt-1">Waiting for confirmation...</p>
                 `;
 

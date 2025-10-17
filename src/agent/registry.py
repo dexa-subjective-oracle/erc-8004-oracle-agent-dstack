@@ -59,7 +59,14 @@ class RegistryClient:
 
         self.identity_abi = [
             {
-                "inputs": [{"name": "tokenURI_", "type": "string"}],
+                "inputs": [],
+                "name": "register",
+                "outputs": [{"name": "agentId", "type": "uint256"}],
+                "type": "function",
+                "stateMutability": "nonpayable"
+            },
+            {
+                "inputs": [{"name": "tokenUri", "type": "string"}],
                 "name": "register",
                 "outputs": [{"name": "agentId", "type": "uint256"}],
                 "type": "function",
@@ -87,9 +94,9 @@ class RegistryClient:
                 "stateMutability": "view"
             },
             {
-                "inputs": [],
-                "name": "totalAgents",
-                "outputs": [{"name": "count", "type": "uint256"}],
+                "inputs": [{"name": "owner", "type": "address"}, {"name": "index", "type": "uint256"}],
+                "name": "tokenOfOwnerByIndex",
+                "outputs": [{"name": "", "type": "uint256"}],
                 "type": "function",
                 "stateMutability": "view"
             },
@@ -113,6 +120,16 @@ class RegistryClient:
                 "outputs": [{"name": "value", "type": "bytes"}],
                 "type": "function",
                 "stateMutability": "view"
+            },
+            {
+                "inputs": [
+                    {"name": "agentId", "type": "uint256"},
+                    {"name": "newUri", "type": "string"}
+                ],
+                "name": "setAgentUri",
+                "outputs": [],
+                "type": "function",
+                "stateMutability": "nonpayable"
             }
         ]
 
@@ -206,25 +223,40 @@ class RegistryClient:
                 print(f"🔍 NFT Balance: {balance}")
 
                 if balance > 0:
-                    # Find agent ID by checking totalAgents and ownerOf
-                    total = self.identity_contract.functions.totalAgents().call()
-                    print(f"🔍 Total agents in registry: {total}")
+                    # Get the first token owned by this address
+                    # ERC721Enumerable provides tokenOfOwnerByIndex
+                    try:
+                        token_id = self.identity_contract.functions.tokenOfOwnerByIndex(checksum_address, 0).call()
+                        print(f"✅ Found agent ID {token_id} for address {checksum_address}")
+                        return {
+                            "registered": True,
+                            "agent_id": token_id,
+                            "agent_address": agent_address
+                        }
+                    except Exception as token_err:
+                        print(f"⚠️  Error getting token by index: {token_err}")
+                        # Fallback: Try brute force search for token IDs
+                        print(f"🔍 Attempting brute force search for token ID (balance: {balance})...")
+                        for potential_id in range(1, 1000):  # Search first 1000 token IDs
+                            try:
+                                owner = self.identity_contract.functions.ownerOf(potential_id).call()
+                                if owner.lower() == checksum_address.lower():
+                                    print(f"✅ Found agent ID {potential_id} via brute force")
+                                    return {
+                                        "registered": True,
+                                        "agent_id": potential_id,
+                                        "agent_address": agent_address
+                                    }
+                            except:
+                                continue
 
-                    for token_id in range(1, total + 1):
-                        try:
-                            owner = self.identity_contract.functions.ownerOf(token_id).call()
-                            if owner.lower() == checksum_address.lower():
-                                print(f"✅ Found agent ID {token_id} for address {checksum_address}")
-                                return {
-                                    "registered": True,
-                                    "agent_id": token_id,
-                                    "agent_address": agent_address
-                                }
-                        except Exception as token_err:
-                            print(f"⚠️  Error checking token {token_id}: {token_err}")
-                            continue
-
-                    print(f"⚠️  Balance is {balance} but couldn't find matching token ID")
+                        # If we still can't find it, return registered but without agent_id
+                        print(f"⚠️  Balance is {balance} but couldn't find token ID after search")
+                        return {
+                            "registered": True,
+                            "agent_id": None,  # Unknown, but we know they're registered
+                            "agent_address": agent_address
+                        }
                 else:
                     print(f"⚠️  Address has no NFTs (balance: 0)")
         except Exception as e:
@@ -257,7 +289,7 @@ class RegistryClient:
         # Check if already registered
         check = await self.check_agent_registration(agent_address=self.account.address)
         if check["registered"]:
-            print(f"✅ Already registered")
+            print(f"✅ Already registered with Agent ID: {check['agent_id']}")
             return check["agent_id"]
 
         # Build tokenURI pointing to /agent.json
@@ -284,9 +316,15 @@ class RegistryClient:
         if receipt['logs'] and len(receipt['logs'][0]['topics']) >= 4:
             agent_id = int(receipt['logs'][0]['topics'][3].hex(), 16)
         else:
-            # Fallback: check balance and find our token
-            total = self.identity_contract.functions.totalAgents().call()
-            agent_id = total  # Last minted token
+            # Fallback: use tokenOfOwnerByIndex to get the token we just minted
+            balance = self.identity_contract.functions.balanceOf(self.account.address).call()
+            if balance > 0:
+                agent_id = self.identity_contract.functions.tokenOfOwnerByIndex(
+                    self.account.address,
+                    balance - 1  # Get the last token (most recently minted)
+                ).call()
+            else:
+                raise RuntimeError("Registration succeeded but couldn't determine agent ID")
 
         print(f"✅ Registered with Agent ID: {agent_id}")
         return agent_id
@@ -424,14 +462,106 @@ class RegistryClient:
         Returns:
             Agent information dictionary
         """
-        result = self.identity_contract.functions.getAgent(agent_id).call()
+        try:
+            owner = self.identity_contract.functions.ownerOf(agent_id).call()
+            token_uri = self.identity_contract.functions.tokenURI(agent_id).call()
 
-        return {
-            "domain": result[0],
-            "address": result[1],
-            "agentCard": json.loads(result[2]) if result[2] else {},
-            "isActive": result[3]
-        }
+            return {
+                "agent_id": agent_id,
+                "owner": owner,
+                "tokenURI": token_uri
+            }
+        except Exception as e:
+            raise ValueError(f"Agent ID {agent_id} not found: {e}")
+
+    async def set_agent_uri(self, agent_id: int, new_uri: str) -> str:
+        """
+        Update the tokenURI for an agent.
+
+        Args:
+            agent_id: Agent ID to update
+            new_uri: New token URI
+
+        Returns:
+            Transaction hash
+        """
+        if not self.account:
+            raise ValueError("Account required for setting agent URI")
+
+        # Build transaction
+        tx = self.identity_contract.functions.setAgentUri(
+            agent_id,
+            new_uri
+        ).build_transaction({
+            'chainId': self.chain_id,
+            'gas': 150000,
+            'gasPrice': self.w3.eth.gas_price,
+            'nonce': self.w3.eth.get_transaction_count(self.account.address)
+        })
+
+        # Sign and send
+        signed_tx = self.account.sign_transaction(tx)
+        tx_hash = self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+        print(f"📤 Set agent URI tx: {tx_hash.hex()}")
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+
+        if receipt.status != 1:
+            raise RuntimeError(f"Set agent URI failed: tx={tx_hash.hex()}")
+
+        return tx_hash.hex()
+
+    async def get_metadata(self, agent_id: int, key: str) -> bytes:
+        """
+        Get metadata value for an agent.
+
+        Args:
+            agent_id: Agent ID
+            key: Metadata key
+
+        Returns:
+            Metadata value as bytes
+        """
+        return self.identity_contract.functions.getMetadata(agent_id, key).call()
+
+    async def set_metadata(self, agent_id: int, key: str, value: bytes) -> str:
+        """
+        Set metadata for an agent.
+
+        Args:
+            agent_id: Agent ID
+            key: Metadata key
+            value: Metadata value as bytes
+
+        Returns:
+            Transaction hash
+        """
+        if not self.account:
+            raise ValueError("Account required for setting metadata")
+
+        # Build transaction
+        tx = self.identity_contract.functions.setMetadata(
+            agent_id,
+            key,
+            value
+        ).build_transaction({
+            'chainId': self.chain_id,
+            'gas': 200000,
+            'gasPrice': self.w3.eth.gas_price,
+            'nonce': self.w3.eth.get_transaction_count(self.account.address)
+        })
+
+        # Sign and send
+        signed_tx = self.account.sign_transaction(tx)
+        tx_hash = self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+        print(f"📤 Set metadata tx: {tx_hash.hex()}")
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+
+        if receipt.status != 1:
+            raise RuntimeError(f"Set metadata failed: tx={tx_hash.hex()}")
+
+        return tx_hash.hex()
 
     async def get_reputation(self, agent_id: int) -> Dict[str, Any]:
         """
