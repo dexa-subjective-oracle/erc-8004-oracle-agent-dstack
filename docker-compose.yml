@@ -1,6 +1,58 @@
-version: '3.8'
-
 services:
+  sandbox:
+    container_name: aio-sandbox
+    image: ghcr.io/agent-infra/sandbox:1.0.0.138
+    platform: linux/amd64
+    security_opt:
+      - seccomp:unconfined
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    expose:
+      - "8079"
+      - "8000"
+      - "8080"
+      - "8089"
+      - "8091"
+      - "8100"
+      - "8101"
+      - "8102"
+      - "8200"
+      - "9222"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/sandbox"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: "unless-stopped"
+    shm_size: "2gb"
+    networks:
+      - agent-network
+    environment:
+      PROXY_SERVER: ${PROXY_SERVER:-}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:-}
+      DNS_OVER_HTTPS_TEMPLATES: ${DNS_OVER_HTTPS_TEMPLATES:-}
+      WORKSPACE: ${WORKSPACE:-"/home/gem"}
+      HOMEPAGE: ${HOMEPAGE:-}
+      BROWSER_EXTRA_ARGS: ${BROWSER_EXTRA_ARGS:-}
+      TZ: ${TZ:-Asia/Singapore}
+      DISPLAY_WIDTH: ${DISPLAY_WIDTH:-1280}
+      DISPLAY_HEIGHT: ${DISPLAY_HEIGHT:-1024}
+      WAIT_PORTS: "8079,8091"
+      VNC_SERVER_PORT: 5900
+      PUBLIC_PORT: 8080
+      AUTH_BACKEND_PORT: 8081
+      WEBSOCKET_PROXY_PORT: 6080
+      GEM_SERVER_PORT: 8088
+      MCP_HUB_PORT: 8079
+      SANDBOX_SRV_PORT: 8091
+      JUPYTER_LAB_PORT: 8888
+      CODE_SERVER_PORT: 8200
+      MCP_SERVER_BROWSER_PORT: 8100
+      TINYPROXY_PORT: 8118
+      MCP_SERVER_MARKITDOWN_PORT: 8101
+      MCP_SERVER_CHROME_DEVTOOLS_PORT: 8102
+      BROWSER_REMOTE_DEBUGGING_PORT: 9222
+
   agent:
     image: ubuntu:22.04
     platform: linux/amd64
@@ -16,28 +68,42 @@ services:
       - AGENT_SALT=${AGENT_SALT}
 
       # TEE/Sandbox configuration
-      - SANDBOX_URL=${SANDBOX_URL}
+      - SANDBOX_URL=http://aio-sandbox:8080
 
       # Blockchain configuration
-      - RPC_URL=${RPC_URL:-https://sepolia.base.org}
-      - CHAIN_ID=${CHAIN_ID:-84532}
+      - RPC_URL=${RPC_URL:-https://1rpc.io/sepolia}
+      - CHAIN_ID=${CHAIN_ID:-11155111}
 
       # Contract addresses (Base Sepolia defaults)
-      - IDENTITY_REGISTRY_ADDRESS=${IDENTITY_REGISTRY_ADDRESS:-0xd08eC0f6F00751993169103d2240A6E3aF6920f4}
-      - TEE_REGISTRY_ADDRESS=${TEE_REGISTRY_ADDRESS:-0x03eCA4d903Adc96440328C2E3a18B71EB0AFa60D}
-      - TEE_VERIFIER_ADDRESS=${TEE_VERIFIER_ADDRESS:-0x481ce1a6EEC3016d1E61725B1527D73Df1c393a5}
+      - IDENTITY_REGISTRY_ADDRESS=${IDENTITY_REGISTRY_ADDRESS:-0x8004a6090Cd10A7288092483047B097295Fb8847}
+      - TEE_REGISTRY_ADDRESS=${TEE_REGISTRY_ADDRESS:-0x034675a9541445087Cd73B2120d6c8AF7F2056E3}
+      - TEE_VERIFIER_ADDRESS=${TEE_VERIFIER_ADDRESS:-0x27F8C122618b05420c2f67A9464415586C30D18B}
 
       # Server configuration
       - AGENT_HOST=${AGENT_HOST:-0.0.0.0}
       - AGENT_PORT=${AGENT_PORT:-80}
+
+      # Redpill configuration
+      - REDPILL_API_KEY=${REDPILL_API_KEY}
+      - REDPILL_API_URL=${REDPILL_API_URL:-https://api.redpill.ai}
+      - AI_MODEL=${AI_MODEL:-phala/qwen-2.5-7b-instruct}
+      - AI_TEMPERATURE=${AI_TEMPERATURE:-0.3}
+      - AI_MAX_TOKENS={AI_MAX_TOKENS:-2000}
+
     volumes:
       - app_data:/app
       - /var/run/dstack.sock:/var/run/dstack.sock
     ports:
       - "8000:80"
     restart: unless-stopped
-    command: >
-      bash -c "
+    depends_on:
+      - sandbox
+    networks:
+      - agent-network
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
         apt-get update &&
         apt-get install -y git &&
         mkdir -p /app/.state &&
@@ -59,7 +125,9 @@ services:
         cd /app &&
         echo '🚀 Starting agent from entrypoint.sh...' &&
         exec bash /app/entrypoint.sh
-      "
 
 volumes:
   app_data:
+
+networks:
+  agent-network:
