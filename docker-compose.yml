@@ -1,7 +1,7 @@
 services:
   sandbox:
     container_name: aio-sandbox
-    image: ghcr.io/agent-infra/sandbox:1.0.0.138
+    image: ghcr.io/agent-infra/sandbox:1.0.0.140
     platform: linux/amd64
     security_opt:
       - seccomp:unconfined
