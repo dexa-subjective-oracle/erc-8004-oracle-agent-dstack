@@ -118,7 +118,7 @@ async def startup_event():
     identity_addr = os.getenv("IDENTITY_REGISTRY_ADDRESS", "0x8506e13d47faa2DC8c5a0dD49182e74A6131a0e3")
     reputation_addr = os.getenv("REPUTATION_REGISTRY_ADDRESS", "0xA13497975fd3f6cA74081B074471C753b622C903")
     validation_addr = os.getenv("VALIDATION_REGISTRY_ADDRESS", "0x6e24aA15e134AF710C330B767018d739CAeCE293")
-    tee_verifier_addr = os.getenv("TEE_VERIFIER_ADDRESS", "0x481ce1a6EEC3016d1E61725B1527D73Df1c393a5")
+    tee_verifier_addr = os.getenv("TEE_VERIFIER_ADDRESS")
 
     registries = RegistryAddresses(
         identity=identity_addr,
@@ -132,12 +132,22 @@ async def startup_event():
     agent = ServerAgent(config, registries)
 
     # Initialize TEE verifier
-    tee_registry_addr = os.getenv("TEE_REGISTRY_ADDRESS", "0x03eCA4d903Adc96440328C2E3a18B71EB0AFa60D")
+    tee_registry_addr = os.getenv("TEE_REGISTRY_ADDRESS")
+    tee_registration_mode = os.getenv("TEE_REGISTRATION_MODE", "manual").lower()
+    tee_arch_label = os.getenv("TEE_ARCH_LABEL", "INTEL_TDX")
+    manual_config_uri = os.getenv("TEE_MANUAL_CONFIG_URI", "manual://dev")
+
+    if not tee_registry_addr:
+        raise RuntimeError("TEE_REGISTRY_ADDRESS must be set")
+
     tee_verifier = TEEVerifier(
         w3=agent._registry_client.w3,
         tee_registry_address=tee_registry_addr,
         account=tee_auth.account,
-        verifier_address=tee_verifier_addr
+        verifier_address=tee_verifier_addr,
+        mode=tee_registration_mode,
+        tee_arch_label=tee_arch_label,
+        manual_config_uri=manual_config_uri
     )
 
     # Generate agent card
