@@ -39,7 +39,8 @@ class OracleClient:
             )
 
     def pending_request_ids(self) -> List[bytes]:
-        return list(self.oracle_contract.functions.pendingRequests().call())
+        raw_ids = self.oracle_contract.functions.pendingRequests().call()
+        return [bytes(req_id) for req_id in raw_ids]
 
     def fetch_request(self, request_id: bytes) -> OracleRequest:
         raw = self.oracle_contract.functions.getRequest(request_id).call()

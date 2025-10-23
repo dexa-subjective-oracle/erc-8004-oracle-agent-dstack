@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from eth_account.messages import encode_defunct
 from eth_utils import keccak
+from web3 import Web3
 import uvicorn
 
 from src.agent.base import AgentConfig, RegistryAddresses
@@ -156,6 +157,18 @@ async def startup_event():
         manual_config_uri=manual_config_uri
     )
 
+    print("\n🪪 Ensuring identity registration...")
+    agent_id = await agent.register()
+    print(f"✅ Agent ID: {agent_id}")
+
+    if tee_registration_mode == "manual":
+        await tee_verifier.register_tee_key(agent_id, address)
+    else:
+        print("⚠️ Proof-based key registration not yet automated in this server build.")
+
+    if agent.oracle_client:
+        await settle_pending_requests()
+
     # Generate agent card
     print("\n📋 Generating agent card...")
     agent_card = await agent._create_agent_card()
@@ -274,6 +287,18 @@ async def get_chain_config():
     })
 
     return config
+
+
+@app.get("/api/oracle/pending")
+async def api_pending_requests():
+    pending = await list_pending_requests()
+    return {"pending": pending}
+
+
+@app.post("/api/oracle/run")
+async def api_run_oracle():
+    results = await settle_pending_requests()
+    return {"settlements": results}
 
 
 @app.get("/api/wallet")
@@ -750,3 +775,44 @@ def main():
 
 if __name__ == "__main__":
     main()
+async def settle_pending_requests(price: int = 0) -> List[Dict[str, Any]]:
+    if not agent or not agent.oracle_client:
+        return []
+
+    def _work() -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        for request in agent.oracle_client.pending_requests():
+            if request.settled:
+                continue
+            evidence_hash = Web3.keccak(text=f"manual:{request.request_id.hex()}")
+            tx_hash = agent.oracle_client.settle_price(request, price, evidence_hash)
+            results.append({
+                "requestId": request.request_id.hex(),
+                "timestamp": request.timestamp,
+                "txHash": tx_hash,
+                "price": price,
+            })
+        return results
+
+    return await asyncio.to_thread(_work)
+
+
+async def list_pending_requests() -> List[Dict[str, Any]]:
+    if not agent or not agent.oracle_client:
+        return []
+
+    def _work() -> List[Dict[str, Any]]:
+        pending: List[Dict[str, Any]] = []
+        for request in agent.oracle_client.pending_requests():
+            pending.append({
+                "requestId": request.request_id.hex(),
+                "requester": request.requester,
+                "timestamp": request.timestamp,
+                "identifier": Web3.to_hex(request.identifier),
+                "ancillaryData": Web3.to_hex(request.ancillary_data),
+                "settled": request.settled,
+                "settledPrice": request.settled_price,
+            })
+        return pending
+
+    return await asyncio.to_thread(_work)
