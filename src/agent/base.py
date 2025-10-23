@@ -39,9 +39,9 @@ class AgentConfig:
 class RegistryAddresses:
     """ERC-8004 registry contract addresses."""
     identity: str
-    reputation: str
-    validation: str
-    tee_verifier: str
+    reputation: Optional[str] = None
+    validation: Optional[str] = None
+    tee_verifier: Optional[str] = None
 
 
 class BaseAgent(ABC):
@@ -264,7 +264,7 @@ class BaseAgent(ABC):
 
     def _init_registry_client(self):
         """Initialize registry client."""
-        registry_dict = {
+        registry_dict: Dict[str, Optional[str]] = {
             'identity': self.registries.identity,
             'reputation': self.registries.reputation,
             'validation': self.registries.validation

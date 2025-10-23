@@ -1,13 +1,61 @@
-"""
-ERC-8004 Registry Client
-
-Handles all interactions with the ERC-8004 registry contracts.
-"""
+"""ERC-8004 Registry Client for Dexa contracts."""
 
 import json
 from typing import Dict, Any, Optional, List
 from web3 import Web3
 from eth_account import Account
+
+from src.utils.contract_loader import load_abi
+
+
+LEGACY_REPUTATION_ABI = [
+    {
+        "inputs": [
+            {"name": "targetAgentId", "type": "uint256"},
+            {"name": "rating", "type": "uint8"},
+            {"name": "data", "type": "string"}
+        ],
+        "name": "submitFeedback",
+        "outputs": [],
+        "type": "function"
+    },
+    {
+        "inputs": [{"name": "agentId", "type": "uint256"}],
+        "name": "getReputation",
+        "outputs": [
+            {"name": "totalFeedback", "type": "uint256"},
+            {"name": "averageRating", "type": "uint256"}
+        ],
+        "type": "function"
+    }
+]
+
+LEGACY_VALIDATION_ABI = [
+    {
+        "inputs": [
+            {"name": "validatorAgentId", "type": "uint256"},
+            {"name": "dataHash", "type": "bytes32"}
+        ],
+        "name": "requestValidation",
+        "outputs": [],
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"name": "dataHash", "type": "bytes32"},
+            {"name": "response", "type": "uint8"}
+        ],
+        "name": "submitValidationResponse",
+        "outputs": [],
+        "type": "function"
+    },
+    {
+        "inputs": [{"name": "dataHash", "type": "bytes32"}],
+        "name": "getValidationStatus",
+        "outputs": [{"name": "", "type": "uint8"}],
+        "type": "function"
+    }
+]
 
 
 class RegistryClient:
@@ -47,157 +95,46 @@ class RegistryClient:
             raise ConnectionError(f"Failed to connect to {rpc_url}")
 
         # Load contract ABIs
-        self._load_abis()
+        self.identity_abi = load_abi("IdentityRegistry")
+        self.reputation_abi = self._load_optional_abi("ReputationRegistry", LEGACY_REPUTATION_ABI)
+        self.validation_abi = self._load_optional_abi("ValidationRegistry", LEGACY_VALIDATION_ABI)
 
         # Initialize contract instances
         self._init_contracts()
 
-    def _load_abis(self):
-        """Load contract ABIs."""
-        # For now, define minimal ABIs inline
-        # In production, load from JSON files
-
-        self.identity_abi = [
-            {
-                "inputs": [],
-                "name": "register",
-                "outputs": [{"name": "agentId", "type": "uint256"}],
-                "type": "function",
-                "stateMutability": "nonpayable"
-            },
-            {
-                "inputs": [{"name": "tokenUri", "type": "string"}],
-                "name": "register",
-                "outputs": [{"name": "agentId", "type": "uint256"}],
-                "type": "function",
-                "stateMutability": "nonpayable"
-            },
-            {
-                "inputs": [{"name": "tokenId", "type": "uint256"}],
-                "name": "ownerOf",
-                "outputs": [{"name": "", "type": "address"}],
-                "type": "function",
-                "stateMutability": "view"
-            },
-            {
-                "inputs": [{"name": "owner", "type": "address"}],
-                "name": "balanceOf",
-                "outputs": [{"name": "", "type": "uint256"}],
-                "type": "function",
-                "stateMutability": "view"
-            },
-            {
-                "inputs": [{"name": "agentId", "type": "uint256"}],
-                "name": "tokenURI",
-                "outputs": [{"name": "", "type": "string"}],
-                "type": "function",
-                "stateMutability": "view"
-            },
-            {
-                "inputs": [{"name": "owner", "type": "address"}, {"name": "index", "type": "uint256"}],
-                "name": "tokenOfOwnerByIndex",
-                "outputs": [{"name": "", "type": "uint256"}],
-                "type": "function",
-                "stateMutability": "view"
-            },
-            {
-                "inputs": [
-                    {"name": "agentId", "type": "uint256"},
-                    {"name": "key", "type": "string"},
-                    {"name": "value", "type": "bytes"}
-                ],
-                "name": "setMetadata",
-                "outputs": [],
-                "type": "function",
-                "stateMutability": "nonpayable"
-            },
-            {
-                "inputs": [
-                    {"name": "agentId", "type": "uint256"},
-                    {"name": "key", "type": "string"}
-                ],
-                "name": "getMetadata",
-                "outputs": [{"name": "value", "type": "bytes"}],
-                "type": "function",
-                "stateMutability": "view"
-            },
-            {
-                "inputs": [
-                    {"name": "agentId", "type": "uint256"},
-                    {"name": "newUri", "type": "string"}
-                ],
-                "name": "setAgentUri",
-                "outputs": [],
-                "type": "function",
-                "stateMutability": "nonpayable"
-            }
-        ]
-
-        self.reputation_abi = [
-            {
-                "inputs": [
-                    {"name": "targetAgentId", "type": "uint256"},
-                    {"name": "rating", "type": "uint8"},
-                    {"name": "data", "type": "string"}
-                ],
-                "name": "submitFeedback",
-                "outputs": [],
-                "type": "function"
-            },
-            {
-                "inputs": [{"name": "agentId", "type": "uint256"}],
-                "name": "getReputation",
-                "outputs": [
-                    {"name": "totalFeedback", "type": "uint256"},
-                    {"name": "averageRating", "type": "uint256"}
-                ],
-                "type": "function"
-            }
-        ]
-
-        self.validation_abi = [
-            {
-                "inputs": [
-                    {"name": "validatorAgentId", "type": "uint256"},
-                    {"name": "dataHash", "type": "bytes32"}
-                ],
-                "name": "requestValidation",
-                "outputs": [],
-                "type": "function"
-            },
-            {
-                "inputs": [
-                    {"name": "dataHash", "type": "bytes32"},
-                    {"name": "response", "type": "uint8"}
-                ],
-                "name": "submitValidationResponse",
-                "outputs": [],
-                "type": "function"
-            },
-            {
-                "inputs": [{"name": "dataHash", "type": "bytes32"}],
-                "name": "getValidationStatus",
-                "outputs": [{"name": "", "type": "uint8"}],
-                "type": "function"
-            }
-        ]
+    @staticmethod
+    def _load_optional_abi(name: str, fallback: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        try:
+            return load_abi(name)
+        except FileNotFoundError:
+            return fallback
 
     def _init_contracts(self):
         """Initialize contract instances."""
-        self.identity_contract = self.w3.eth.contract(
-            address=Web3.to_checksum_address(self.registries['identity']),
-            abi=self.identity_abi
-        )
+        identity_address = self._require_registry("identity")
+        self.identity_contract = self.w3.eth.contract(address=identity_address, abi=self.identity_abi)
 
-        self.reputation_contract = self.w3.eth.contract(
-            address=Web3.to_checksum_address(self.registries['reputation']),
-            abi=self.reputation_abi
-        )
+        reputation_address = self.registries.get("reputation")
+        self.reputation_contract = None
+        if reputation_address:
+            self.reputation_contract = self.w3.eth.contract(
+                address=Web3.to_checksum_address(reputation_address),
+                abi=self.reputation_abi
+            )
 
-        self.validation_contract = self.w3.eth.contract(
-            address=Web3.to_checksum_address(self.registries['validation']),
-            abi=self.validation_abi
-        )
+        validation_address = self.registries.get("validation")
+        self.validation_contract = None
+        if validation_address:
+            self.validation_contract = self.w3.eth.contract(
+                address=Web3.to_checksum_address(validation_address),
+                abi=self.validation_abi
+            )
+
+    def _require_registry(self, key: str) -> str:
+        address = self.registries.get(key)
+        if not address:
+            raise ValueError(f"Missing registry address for '{key}'")
+        return Web3.to_checksum_address(address)
 
     async def check_agent_registration(
         self,
@@ -348,6 +285,8 @@ class RegistryClient:
         """
         if not self.account:
             raise ValueError("Account required for feedback submission")
+        if not self.reputation_contract:
+            raise RuntimeError("Reputation registry not configured")
 
         # Convert data to JSON
         data_json = json.dumps(data)
@@ -387,6 +326,8 @@ class RegistryClient:
         """
         if not self.account:
             raise ValueError("Account required for validation request")
+        if not self.validation_contract:
+            raise RuntimeError("Validation registry not configured")
 
         # Convert data hash to bytes32
         if data_hash.startswith('0x'):
@@ -428,6 +369,8 @@ class RegistryClient:
         """
         if not self.account:
             raise ValueError("Account required for validation response")
+        if not self.validation_contract:
+            raise RuntimeError("Validation registry not configured")
 
         # Convert data hash to bytes32
         if data_hash.startswith('0x'):
@@ -573,6 +516,8 @@ class RegistryClient:
         Returns:
             Reputation information
         """
+        if not self.reputation_contract:
+            raise RuntimeError("Reputation registry not configured")
         result = self.reputation_contract.functions.getReputation(agent_id).call()
 
         return {
