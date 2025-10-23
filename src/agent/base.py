@@ -11,6 +11,7 @@ from enum import Enum
 
 from .tee_auth import TEEAuthenticator
 from .registry import RegistryClient
+from .oracle_client import OracleClient
 from .eip712 import EIP712Signer
 
 
@@ -42,6 +43,8 @@ class RegistryAddresses:
     reputation: Optional[str] = None
     validation: Optional[str] = None
     tee_verifier: Optional[str] = None
+    tee_oracle: Optional[str] = None
+    tee_oracle_adapter: Optional[str] = None
 
 
 class BaseAgent(ABC):
@@ -72,6 +75,7 @@ class BaseAgent(ABC):
         # Initialize core components
         self._init_tee_auth()
         self._init_registry_client()
+        self._init_oracle_client()
         self._init_signer()
 
         print(f"🤖 Agent initialized for domain: {config.domain}")
@@ -251,6 +255,11 @@ class BaseAgent(ABC):
         """
         return list(self._plugins.keys())
 
+    @property
+    def oracle_client(self) -> Optional[OracleClient]:
+        """Expose the oracle client when configured."""
+        return getattr(self, "_oracle_client", None)
+
     # Private Implementation Methods
     def _init_tee_auth(self):
         """Initialize TEE authentication."""
@@ -275,6 +284,19 @@ class BaseAgent(ABC):
             chain_id=self.config.chain_id,
             registries=registry_dict,
             account=self._tee_auth.account if hasattr(self._tee_auth, 'account') else None
+        )
+
+    def _init_oracle_client(self):
+        account = self._tee_auth.account if hasattr(self._tee_auth, 'account') else None
+        if not self.registries.tee_oracle or account is None:
+            self._oracle_client: Optional[OracleClient] = None
+            return
+
+        self._oracle_client = OracleClient(
+            w3=self._registry_client.w3,
+            oracle_address=self.registries.tee_oracle,
+            adapter_address=self.registries.tee_oracle_adapter,
+            account=account,
         )
 
     def _init_signer(self):

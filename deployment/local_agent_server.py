@@ -118,13 +118,17 @@ async def startup_event():
     identity_addr = os.getenv("IDENTITY_REGISTRY_ADDRESS", "0x8506e13d47faa2DC8c5a0dD49182e74A6131a0e3")
     reputation_addr = os.getenv("REPUTATION_REGISTRY_ADDRESS", "0xA13497975fd3f6cA74081B074471C753b622C903")
     validation_addr = os.getenv("VALIDATION_REGISTRY_ADDRESS", "0x6e24aA15e134AF710C330B767018d739CAeCE293")
+    tee_oracle_addr = os.getenv("TEE_ORACLE_ADDRESS")
+    tee_oracle_adapter_addr = os.getenv("TEE_ORACLE_ADAPTER_ADDRESS")
     tee_verifier_addr = os.getenv("TEE_VERIFIER_ADDRESS")
 
     registries = RegistryAddresses(
         identity=identity_addr,
         reputation=reputation_addr,
         validation=validation_addr,
-        tee_verifier=tee_verifier_addr
+        tee_verifier=tee_verifier_addr,
+        tee_oracle=tee_oracle_addr,
+        tee_oracle_adapter=tee_oracle_adapter_addr
     )
 
     # Initialize agent
@@ -139,6 +143,8 @@ async def startup_event():
 
     if not tee_registry_addr:
         raise RuntimeError("TEE_REGISTRY_ADDRESS must be set")
+    if not tee_oracle_addr:
+        raise RuntimeError("TEE_ORACLE_ADDRESS must be set")
 
     tee_verifier = TEEVerifier(
         w3=agent._registry_client.w3,
