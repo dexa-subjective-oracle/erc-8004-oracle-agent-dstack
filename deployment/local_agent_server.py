@@ -9,6 +9,8 @@ Demonstrates TEE-derived key signing without requiring on-chain registration.
 import sys
 import os
 import asyncio
+import json
+import hashlib
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -683,9 +685,20 @@ async def execute_task(task_id: str, request: Dict[str, Any]):
     tasks[task_id]["status"] = "running"
     try:
         result = await agent.process_task(request)
+        bundle = {
+            "task_id": task_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            "request": request,
+            "result": result
+        }
+        bundle_bytes = json.dumps(bundle, sort_keys=True).encode()
+        bundle_hash = hashlib.sha256(bundle_bytes).hexdigest()
+
         tasks[task_id].update({
             "status": "completed",
-            "artifacts": [{"type": "result", "data": result}]
+            "artifacts": [{"type": "result", "data": result}],
+            "evidence": bundle,
+            "evidenceHash": bundle_hash
         })
     except Exception as e:
         tasks[task_id].update({
