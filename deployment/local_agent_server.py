@@ -82,10 +82,12 @@ async def startup_event():
 
     # Initialize TEE authenticator
     print("\n🔑 Initializing TEE authentication...")
+    use_tee_auth = os.getenv("USE_TEE_AUTH", "false").lower() == "true"
     tee_auth = TEEAuthenticator(
         domain=domain,
         salt=salt,
-        use_tee=True  # Use real TEE
+        use_tee=use_tee_auth,
+        private_key=None if use_tee_auth else os.getenv("DEPLOYER_PRIVATE_KEY")
     )
 
     address = await tee_auth.derive_address()
@@ -111,7 +113,7 @@ async def startup_event():
         role=AgentRole.SERVER,
         chain_id=chain_id,
         rpc_url=rpc_url,
-        use_tee_auth=True,
+        use_tee_auth=use_tee_auth,
         private_key=tee_auth.private_key
     )
 
