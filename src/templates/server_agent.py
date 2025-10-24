@@ -1,10 +1,15 @@
 """Server Agent - AIO Sandbox Integration"""
 
+import asyncio
+import json
 import os
-import httpx
 from datetime import datetime
-from typing import Dict, Any, Optional
-from ..agent.base import BaseAgent, AgentConfig, RegistryAddresses
+from typing import Any, Dict, List, Optional
+
+import httpx
+from web3 import Web3
+
+from ..agent.base import AgentConfig, BaseAgent, RegistryAddresses
 
 
 class ServerAgent(BaseAgent):
@@ -14,6 +19,10 @@ class ServerAgent(BaseAgent):
         super().__init__(config, registries)
         self.sandbox_url = sandbox_url or os.getenv("SANDBOX_URL", "http://localhost:8080")
         print(f"📦 Sandbox: {self.sandbox_url}")
+
+        self._oracle_task: Optional[asyncio.Task] = None
+        self._oracle_poll_interval = int(os.getenv("ORACLE_POLL_INTERVAL", "30"))
+        self._oracle_grace_seconds = int(os.getenv("ORACLE_SETTLEMENT_GRACE_SECONDS", "0"))
 
         # Initialize AI generator if API key is available
         self.ai_generator = None
@@ -57,6 +66,111 @@ class ServerAgent(BaseAgent):
             )
         else:
             return {"error": "Unknown task type", "type": task_type}
+
+    async def start_oracle_worker(self) -> None:
+        """Launch background watcher that settles oracle requests once deadlines pass."""
+        if not self.oracle_client:
+            print("ℹ️ Oracle watcher skipped (oracle client not configured)")
+            return
+        if self._oracle_task and not self._oracle_task.done():
+            return
+        self._oracle_task = asyncio.create_task(self._oracle_watch_loop(), name="oracle-settlement-loop")
+        print(f"🕒 Oracle watcher started (poll interval {self._oracle_poll_interval}s)")
+
+    async def run_oracle_cycle(self, price_override: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Process a single oracle polling cycle."""
+        return await self._process_pending_requests(price_override=price_override)
+
+    async def _oracle_watch_loop(self) -> None:
+        """Continuously poll pending oracle requests and settle when ready."""
+        while True:
+            try:
+                await self._process_pending_requests()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                print(f"⚠️ Oracle watcher error: {exc}")
+            await asyncio.sleep(self._oracle_poll_interval)
+
+    async def _process_pending_requests(self, price_override: Optional[int] = None) -> List[Dict[str, Any]]:
+        if not self.oracle_client:
+            return []
+
+        pending = await asyncio.to_thread(self.oracle_client.pending_requests)
+        if not pending:
+            return []
+
+        latest_block = await asyncio.to_thread(self._registry_client.w3.eth.get_block, "latest")
+        now_ts = latest_block["timestamp"]
+        results: List[Dict[str, Any]] = []
+
+        for request in pending:
+            if request.settled:
+                continue
+            if not self._ready_to_settle(request, now_ts):
+                continue
+            price = price_override if price_override is not None else self._compute_price(request)
+            evidence_hash = self._build_evidence_hash(request, price, now_ts)
+
+            print(
+                f"⚙️ Settling request {request.request_id.hex()} | "
+                f"timestamp={request.timestamp} price={price}"
+            )
+            tx_hash = await asyncio.to_thread(self.oracle_client.settle_price, request, price, evidence_hash)
+            print(f"✅ Settlement submitted: tx={tx_hash}")
+            results.append(
+                {
+                    "requestId": request.request_id.hex(),
+                    "timestamp": request.timestamp,
+                    "price": price,
+                    "txHash": tx_hash,
+                }
+            )
+
+        return results
+
+    def _ready_to_settle(self, request, now_ts: int) -> bool:
+        deadline = request.timestamp + self._oracle_grace_seconds
+        if now_ts < deadline:
+            remaining = deadline - now_ts
+            print(
+                f"⏳ Request {request.request_id.hex()} waiting for deadline "
+                f"(+{remaining}s)"
+            )
+            return False
+        return True
+
+    def _compute_price(self, request) -> int:
+        """
+        Derive a deterministic price from ancillary data for demo purposes.
+
+        We hash the ancillary payload to keep results reproducible across runs.
+        """
+        if request.ancillary_data:
+            digest = Web3.keccak(request.ancillary_data)
+            value = int.from_bytes(digest[-8:], "big")
+            return value % 1_000_000
+        return 0
+
+    def _build_evidence_hash(self, request, price: int, settled_at: int) -> bytes:
+        ancillary = self._decode_ancillary(request.ancillary_data)
+        payload = {
+            "requestId": request.request_id.hex(),
+            "identifier": Web3.to_hex(request.identifier),
+            "timestamp": request.timestamp,
+            "settledAt": settled_at,
+            "price": price,
+            "ancillary": ancillary,
+        }
+        serialized = json.dumps(payload, sort_keys=True)
+        return Web3.keccak(text=serialized)
+
+    @staticmethod
+    def _decode_ancillary(data: bytes) -> str:
+        if not data:
+            return ""
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return data.hex()
 
     async def _execute_shell(self, command: str) -> Dict[str, Any]:
         """Execute shell command via sandbox."""

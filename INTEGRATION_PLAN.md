@@ -11,7 +11,7 @@ This document captures the implementation plan for wiring the ERC-8004 Oracle Ag
   - [ ] Introduce a config module that reads `.env`/JSON deployment artifacts produced by the forge script (`broadcast/.../run-latest.json`) and delivers typed addresses to the agent at startup.
 
 - **Environment wiring**  
-  - [ ] Extend `.env.example` with `IDENTITY_REGISTRY_ADDRESS`, `TEE_REGISTRY_ADDRESS`, `TEE_ORACLE_ADDRESS`, `TEE_ORACLE_ADAPTER_ADDRESS`, `BASE_SEPOLIA_RPC_URL`, and reuse `DEPLOYER_PRIVATE_KEY` for local dev.  
+  - [ ] Extend `.env.example` with `IDENTITY_REGISTRY_ADDRESS`, `TEE_REGISTRY_ADDRESS`, `TEE_ORACLE_ADDRESS`, `TEE_ORACLE_ADAPTER_ADDRESS`, `BASE_SEPOLIA_RPC_URL`, and reuse `RESOLVER_PRIVATE_KEY` (fallback: `DEPLOYER_PRIVATE_KEY`) for local dev.  
   - [ ] Add helper script (`scripts/load_contract_env.py`) so contributors can point the agent at a specific broadcast folder.
 
 ---

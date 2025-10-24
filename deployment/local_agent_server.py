@@ -33,6 +33,7 @@ from src.agent.base import AgentConfig, RegistryAddresses
 from src.templates.server_agent import ServerAgent
 from src.agent.tee_auth import TEEAuthenticator
 from src.agent.tee_verifier import TEEVerifier
+from src.utils.contract_loader import load_deployment
 
 
 # Request/Response Models
@@ -81,11 +82,15 @@ async def startup_event():
     # Initialize TEE authenticator
     print("\n🔑 Initializing TEE authentication...")
     use_tee_auth = os.getenv("USE_TEE_AUTH", "false").lower() == "true"
+    resolver_private_key = os.getenv("RESOLVER_PRIVATE_KEY") or os.getenv("DEPLOYER_PRIVATE_KEY")
+    if not use_tee_auth and not resolver_private_key:
+        raise RuntimeError("RESOLVER_PRIVATE_KEY must be set when USE_TEE_AUTH=false")
+
     tee_auth = TEEAuthenticator(
         domain=domain,
         salt=salt,
         use_tee=use_tee_auth,
-        private_key=None if use_tee_auth else os.getenv("DEPLOYER_PRIVATE_KEY")
+        private_key=None if use_tee_auth else resolver_private_key
     )
 
     address = await tee_auth.derive_address()
@@ -115,13 +120,25 @@ async def startup_event():
         private_key=tee_auth.private_key
     )
 
+    # Load deployment defaults if available
+    deployment_payload: Dict[str, Any] = {}
+    try:
+        deployment_payload = load_deployment()
+        print("🗂️ Loaded deployment defaults from contracts/deployments")
+    except FileNotFoundError:
+        print("⚠️ No deployment defaults found; relying solely on environment variables")
+
+    deployment_contracts = deployment_payload.get("contracts", {})
+    deployment_metadata = deployment_payload.get("metadata", {})
+
     # Registry addresses (new contracts from environment or defaults)
-    identity_addr = os.getenv("IDENTITY_REGISTRY_ADDRESS", "0x8506e13d47faa2DC8c5a0dD49182e74A6131a0e3")
-    reputation_addr = os.getenv("REPUTATION_REGISTRY_ADDRESS", "0xA13497975fd3f6cA74081B074471C753b622C903")
-    validation_addr = os.getenv("VALIDATION_REGISTRY_ADDRESS", "0x6e24aA15e134AF710C330B767018d739CAeCE293")
-    tee_oracle_addr = os.getenv("TEE_ORACLE_ADDRESS")
-    tee_oracle_adapter_addr = os.getenv("TEE_ORACLE_ADAPTER_ADDRESS")
-    tee_verifier_addr = os.getenv("TEE_VERIFIER_ADDRESS")
+    identity_addr = os.getenv("IDENTITY_REGISTRY_ADDRESS", deployment_contracts.get("IdentityRegistry", ""))
+    reputation_addr = os.getenv("REPUTATION_REGISTRY_ADDRESS", "")
+    validation_addr = os.getenv("VALIDATION_REGISTRY_ADDRESS", "")
+    tee_oracle_addr = os.getenv("TEE_ORACLE_ADDRESS", deployment_contracts.get("TeeOracle"))
+    tee_oracle_adapter_addr = os.getenv("TEE_ORACLE_ADAPTER_ADDRESS", deployment_contracts.get("TeeOracleAdapter"))
+    tee_verifier_addr = os.getenv("TEE_VERIFIER_ADDRESS", deployment_contracts.get("DstackOffchainVerifier"))
+    tee_registry_addr = os.getenv("TEE_REGISTRY_ADDRESS", deployment_contracts.get("TEERegistry"))
 
     registries = RegistryAddresses(
         identity=identity_addr,
@@ -137,7 +154,6 @@ async def startup_event():
     agent = ServerAgent(config, registries)
 
     # Initialize TEE verifier
-    tee_registry_addr = os.getenv("TEE_REGISTRY_ADDRESS")
     tee_registration_mode = os.getenv("TEE_REGISTRATION_MODE", "manual").lower()
     tee_arch_label = os.getenv("TEE_ARCH_LABEL", "INTEL_TDX")
     manual_config_uri = os.getenv("TEE_MANUAL_CONFIG_URI", "manual://dev")
@@ -167,7 +183,10 @@ async def startup_event():
         print("⚠️ Proof-based key registration not yet automated in this server build.")
 
     if agent.oracle_client:
-        await settle_pending_requests()
+        initial_settlements = await agent.run_oracle_cycle()
+        if initial_settlements:
+            print(f"⚖️ Settled {len(initial_settlements)} pending requests on startup")
+        await agent.start_oracle_worker()
 
     # Generate agent card
     print("\n📋 Generating agent card...")
@@ -185,26 +204,11 @@ async def startup_event():
     print("\n" + "=" * 80)
 
 
-async def settle_pending_requests(price: int = 0) -> List[Dict[str, Any]]:
+async def settle_pending_requests(price_override: Optional[int] = None) -> List[Dict[str, Any]]:
     if not agent or not agent.oracle_client:
         return []
 
-    def _work() -> List[Dict[str, Any]]:
-        results: List[Dict[str, Any]] = []
-        for request in agent.oracle_client.pending_requests():
-            if request.settled:
-                continue
-            evidence_hash = Web3.keccak(text=f"manual:{request.request_id.hex()}")
-            tx_hash = agent.oracle_client.settle_price(request, price, evidence_hash)
-            results.append({
-                "requestId": request.request_id.hex(),
-                "timestamp": request.timestamp,
-                "txHash": tx_hash,
-                "price": price,
-            })
-        return results
-
-    return await asyncio.to_thread(_work)
+    return await agent.run_oracle_cycle(price_override=price_override)
 
 
 async def list_pending_requests() -> List[Dict[str, Any]]:

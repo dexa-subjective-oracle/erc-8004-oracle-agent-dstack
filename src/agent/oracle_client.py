@@ -9,6 +9,8 @@ from eth_account import Account
 from eth_typing import HexStr
 from web3 import Web3
 
+from web3.exceptions import BadFunctionCallOutput, ContractLogicError
+
 from src.utils.contract_loader import load_abi
 
 
@@ -30,20 +32,35 @@ class OracleClient:
     def __init__(self, w3: Web3, oracle_address: str, account: Account, adapter_address: Optional[str] = None):
         self.w3 = w3
         self.account = account
-        self.oracle_contract = w3.eth.contract(address=Web3.to_checksum_address(oracle_address), abi=load_abi("TeeOracle"))
+        self.oracle_contract = w3.eth.contract(
+            address=Web3.to_checksum_address(oracle_address),
+            abi=load_abi("TeeOracle"),
+        )
         self.adapter_contract = None
         if adapter_address:
             self.adapter_contract = w3.eth.contract(
                 address=Web3.to_checksum_address(adapter_address),
                 abi=load_abi("TeeOracleAdapter")
             )
+        self._has_get_request = hasattr(self.oracle_contract.functions, "getRequest")
 
     def pending_request_ids(self) -> List[bytes]:
         raw_ids = self.oracle_contract.functions.pendingRequests().call()
         return [bytes(req_id) for req_id in raw_ids]
 
     def fetch_request(self, request_id: bytes) -> OracleRequest:
-        raw = self.oracle_contract.functions.getRequest(request_id).call()
+        raw: Any
+        if self._has_get_request:
+            try:
+                raw = self.oracle_contract.functions.getRequest(request_id).call()
+            except (BadFunctionCallOutput, ContractLogicError):
+                raw = self.oracle_contract.functions.requests(request_id).call()
+        else:
+            raw = self.oracle_contract.functions.requests(request_id).call()
+
+        # Some deployments append resolver to the struct. We only need the first nine fields.
+        if isinstance(raw, (list, tuple)) and len(raw) >= 10:
+            raw = raw[:9]
         return OracleRequest(
             request_id=request_id,
             requester=raw[0],
