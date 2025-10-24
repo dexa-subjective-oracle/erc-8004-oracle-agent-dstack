@@ -5,14 +5,17 @@ Provides core functionality for trustless agent interactions.
 """
 
 from abc import ABC, abstractmethod
+import os
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 from .tee_auth import TEEAuthenticator
 from .registry import RegistryClient
 from .oracle_client import OracleClient
 from .eip712 import EIP712Signer
+from src.utils.state import load_agent_state, save_agent_state
 
 
 class AgentRole(Enum):
@@ -71,6 +74,9 @@ class BaseAgent(ABC):
         self.agent_id: Optional[int] = None
         self.is_registered = False
         self._plugins: Dict[str, Any] = {}
+        self._state_path = Path(os.getenv("AGENT_STATE_FILE", "state/agent.json"))
+
+        self._load_state()
 
         # Initialize core components
         self._init_tee_auth()
@@ -89,6 +95,13 @@ class BaseAgent(ABC):
             Agent ID assigned by the registry
         """
         if self.is_registered:
+            return self.agent_id
+
+        existing = load_agent_state(self._state_path)
+        if existing.get("agent_id") is not None:
+            self.agent_id = existing["agent_id"]
+            self.is_registered = True
+            print(f"✅ Loaded agent ID from state: {self.agent_id}")
             return self.agent_id
 
         # Get agent address
@@ -113,6 +126,10 @@ class BaseAgent(ABC):
         )
 
         self.is_registered = True
+        save_agent_state({
+            "agent_id": self.agent_id,
+            "address": agent_address
+        }, self._state_path)
         print(f"✅ Agent registered with ID: {self.agent_id}")
 
         return self.agent_id
@@ -259,6 +276,12 @@ class BaseAgent(ABC):
     def oracle_client(self) -> Optional[OracleClient]:
         """Expose the oracle client when configured."""
         return getattr(self, "_oracle_client", None)
+
+    def _load_state(self) -> None:
+        state = load_agent_state(self._state_path)
+        if state.get("agent_id") is not None:
+            self.agent_id = state["agent_id"]
+            self.is_registered = True
 
     # Private Implementation Methods
     def _init_tee_auth(self):

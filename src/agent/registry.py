@@ -160,40 +160,12 @@ class RegistryClient:
                 print(f"🔍 NFT Balance: {balance}")
 
                 if balance > 0:
-                    # Get the first token owned by this address
-                    # ERC721Enumerable provides tokenOfOwnerByIndex
-                    try:
-                        token_id = self.identity_contract.functions.tokenOfOwnerByIndex(checksum_address, 0).call()
-                        print(f"✅ Found agent ID {token_id} for address {checksum_address}")
-                        return {
-                            "registered": True,
-                            "agent_id": token_id,
-                            "agent_address": agent_address
-                        }
-                    except Exception as token_err:
-                        print(f"⚠️  Error getting token by index: {token_err}")
-                        # Fallback: Try brute force search for token IDs
-                        print(f"🔍 Attempting brute force search for token ID (balance: {balance})...")
-                        for potential_id in range(1, 1000):  # Search first 1000 token IDs
-                            try:
-                                owner = self.identity_contract.functions.ownerOf(potential_id).call()
-                                if owner.lower() == checksum_address.lower():
-                                    print(f"✅ Found agent ID {potential_id} via brute force")
-                                    return {
-                                        "registered": True,
-                                        "agent_id": potential_id,
-                                        "agent_address": agent_address
-                                    }
-                            except:
-                                continue
-
-                        # If we still can't find it, return registered but without agent_id
-                        print(f"⚠️  Balance is {balance} but couldn't find token ID after search")
-                        return {
-                            "registered": True,
-                            "agent_id": None,  # Unknown, but we know they're registered
-                            "agent_address": agent_address
-                        }
+                    token_id = self._find_agent_id_by_owner(checksum_address, max_search=2000)
+                    return {
+                        "registered": True,
+                        "agent_id": token_id,
+                        "agent_address": agent_address
+                    }
                 else:
                     print(f"⚠️  Address has no NFTs (balance: 0)")
         except Exception as e:
@@ -202,6 +174,18 @@ class RegistryClient:
             traceback.print_exc()
 
         return {"registered": False}
+
+    def _find_agent_id_by_owner(self, owner: str, max_search: int = 2000) -> Optional[int]:
+        for potential_id in range(max_search):
+            try:
+                current_owner = self.identity_contract.functions.ownerOf(potential_id).call()
+            except Exception:
+                continue
+            if current_owner.lower() == owner.lower():
+                print(f"✅ Found agent ID {potential_id} via ownerOf lookup")
+                return potential_id
+        print("⚠️  Unable to resolve agent ID via ownerOf search")
+        return None
 
     async def register_agent(
         self,
@@ -225,7 +209,7 @@ class RegistryClient:
 
         # Check if already registered
         check = await self.check_agent_registration(agent_address=self.account.address)
-        if check["registered"]:
+        if check["registered"] and check.get("agent_id") is not None:
             print(f"✅ Already registered with Agent ID: {check['agent_id']}")
             return check["agent_id"]
 
@@ -253,14 +237,8 @@ class RegistryClient:
         if receipt['logs'] and len(receipt['logs'][0]['topics']) >= 4:
             agent_id = int(receipt['logs'][0]['topics'][3].hex(), 16)
         else:
-            # Fallback: use tokenOfOwnerByIndex to get the token we just minted
-            balance = self.identity_contract.functions.balanceOf(self.account.address).call()
-            if balance > 0:
-                agent_id = self.identity_contract.functions.tokenOfOwnerByIndex(
-                    self.account.address,
-                    balance - 1  # Get the last token (most recently minted)
-                ).call()
-            else:
+            agent_id = self._find_agent_id_by_owner(self.account.address)
+            if agent_id is None:
                 raise RuntimeError("Registration succeeded but couldn't determine agent ID")
 
         print(f"✅ Registered with Agent ID: {agent_id}")

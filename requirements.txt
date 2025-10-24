@@ -8,6 +8,7 @@ typing-extensions>=4.5.0
 fastapi>=0.104.0
 uvicorn>=0.24.0
 eth-utils>=2.2.0
+click>=8.1.0
 
 # Optional: AI capabilities (install with pip install -e .[ai])
 # openai>=1.0.0

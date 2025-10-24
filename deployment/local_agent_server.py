@@ -62,8 +62,6 @@ app.mount("/static", StaticFiles(directory=static_path), name="static")
 agent: Optional[ServerAgent] = None
 tee_auth: Optional[TEEAuthenticator] = None
 tee_verifier: Optional[TEEVerifier] = None
-
-
 @app.on_event("startup")
 async def startup_event():
     """Initialize agent on startup."""
@@ -185,6 +183,49 @@ async def startup_event():
     for cap in agent_card.get('capabilities', []):
         print(f"  • {cap['name']}: {cap['description'][:60]}...")
     print("\n" + "=" * 80)
+
+
+async def settle_pending_requests(price: int = 0) -> List[Dict[str, Any]]:
+    if not agent or not agent.oracle_client:
+        return []
+
+    def _work() -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        for request in agent.oracle_client.pending_requests():
+            if request.settled:
+                continue
+            evidence_hash = Web3.keccak(text=f"manual:{request.request_id.hex()}")
+            tx_hash = agent.oracle_client.settle_price(request, price, evidence_hash)
+            results.append({
+                "requestId": request.request_id.hex(),
+                "timestamp": request.timestamp,
+                "txHash": tx_hash,
+                "price": price,
+            })
+        return results
+
+    return await asyncio.to_thread(_work)
+
+
+async def list_pending_requests() -> List[Dict[str, Any]]:
+    if not agent or not agent.oracle_client:
+        return []
+
+    def _work() -> List[Dict[str, Any]]:
+        pending: List[Dict[str, Any]] = []
+        for request in agent.oracle_client.pending_requests():
+            pending.append({
+                "requestId": request.request_id.hex(),
+                "requester": request.requester,
+                "timestamp": request.timestamp,
+                "identifier": Web3.to_hex(request.identifier),
+                "ancillaryData": Web3.to_hex(request.ancillary_data),
+                "settled": request.settled,
+                "settledPrice": request.settled_price,
+            })
+        return pending
+
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/")
@@ -777,44 +818,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-async def settle_pending_requests(price: int = 0) -> List[Dict[str, Any]]:
-    if not agent or not agent.oracle_client:
-        return []
-
-    def _work() -> List[Dict[str, Any]]:
-        results: List[Dict[str, Any]] = []
-        for request in agent.oracle_client.pending_requests():
-            if request.settled:
-                continue
-            evidence_hash = Web3.keccak(text=f"manual:{request.request_id.hex()}")
-            tx_hash = agent.oracle_client.settle_price(request, price, evidence_hash)
-            results.append({
-                "requestId": request.request_id.hex(),
-                "timestamp": request.timestamp,
-                "txHash": tx_hash,
-                "price": price,
-            })
-        return results
-
-    return await asyncio.to_thread(_work)
-
-
-async def list_pending_requests() -> List[Dict[str, Any]]:
-    if not agent or not agent.oracle_client:
-        return []
-
-    def _work() -> List[Dict[str, Any]]:
-        pending: List[Dict[str, Any]] = []
-        for request in agent.oracle_client.pending_requests():
-            pending.append({
-                "requestId": request.request_id.hex(),
-                "requester": request.requester,
-                "timestamp": request.timestamp,
-                "identifier": Web3.to_hex(request.identifier),
-                "ancillaryData": Web3.to_hex(request.ancillary_data),
-                "settled": request.settled,
-                "settledPrice": request.settled_price,
-            })
-        return pending
-
-    return await asyncio.to_thread(_work)

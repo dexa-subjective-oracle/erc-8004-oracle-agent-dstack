@@ -91,6 +91,7 @@ data/
 deployed_contracts.json
 validation_results/
 agent_state/
+state/
 
 # Claude Code
 .claude/
