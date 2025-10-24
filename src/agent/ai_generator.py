@@ -9,20 +9,32 @@ from datetime import datetime
 
 
 class AIScriptGenerator:
-    """Generate code using RedPill Confidential AI with TEE attestation"""
+    """Generate code using configurable AI backends (RedPill or local Ollama)."""
 
-    def __init__(self, api_key: str = None, api_url: str = None):
-        self.api_key = api_key or os.getenv("REDPILL_API_KEY")
-        self.api_url = api_url or os.getenv("REDPILL_API_URL", "https://api.redpill.ai")
+    def __init__(self, api_key: str = None, api_url: str = None, provider: Optional[str] = None):
+        inferred_provider = provider or os.getenv("AI_PROVIDER")
+        if not inferred_provider:
+            inferred_provider = "redpill" if (api_key or os.getenv("REDPILL_API_KEY")) else "ollama"
 
-        if not self.api_key:
-            raise ValueError("REDPILL_API_KEY not set")
+        self.provider = inferred_provider.lower()
+        self.model = os.getenv("AI_MODEL")
+        if self.provider == "ollama":
+            self.api_url = api_url or os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
+            self.api_key = None
+            self.model = self.model or os.getenv("OLLAMA_MODEL", "qwen3:0.6b")
+            self.supports_attestation = False
+            print(f"🤖 AI Generator (Ollama): {self.model} @ {self.api_url}")
+        else:
+            self.api_key = api_key or os.getenv("REDPILL_API_KEY")
+            self.api_url = api_url or os.getenv("REDPILL_API_URL", "https://api.redpill.ai")
+            if not self.api_key:
+                raise ValueError("REDPILL_API_KEY not set")
+            self.model = self.model or "phala/qwen-2.5-7b-instruct"
+            self.supports_attestation = True
+            print(f"🤖 AI Generator (RedPill): {self.model}")
 
-        self.model = os.getenv("AI_MODEL", "phala/qwen-2.5-7b-instruct")
         self.temperature = float(os.getenv("AI_TEMPERATURE", "0.3"))
         self.max_tokens = int(os.getenv("AI_MAX_TOKENS", "2000"))
-
-        print(f"🤖 AI Generator: {self.model}")
 
     async def generate_python_script(
         self,
@@ -37,7 +49,8 @@ class AIScriptGenerator:
             (code, attestation_data) tuple
         """
         prompt = self._build_prompt("python", task_description, context)
-        code, attestation = await self._call_ai(prompt, include_attestation)
+        attestation_flag = include_attestation and self.supports_attestation
+        code, attestation = await self._call_ai(prompt, attestation_flag)
         return code, attestation
 
     async def generate_javascript_script(
@@ -53,7 +66,8 @@ class AIScriptGenerator:
             (code, attestation_data) tuple
         """
         prompt = self._build_prompt("javascript", task_description, context)
-        code, attestation = await self._call_ai(prompt, include_attestation)
+        attestation_flag = include_attestation and self.supports_attestation
+        code, attestation = await self._call_ai(prompt, attestation_flag)
         return code, attestation
 
     def _build_prompt(
@@ -112,12 +126,15 @@ Output format: Pure JavaScript code only"""
         prompt: str,
         include_attestation: bool
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
-        """
-        Call RedPill Confidential AI API with attestation.
+        if self.provider == "ollama":
+            return await self._call_ollama(prompt)
+        return await self._call_redpill(prompt, include_attestation)
 
-        Returns:
-            (code, attestation_data) tuple
-        """
+    async def _call_redpill(
+        self,
+        prompt: str,
+        include_attestation: bool
+    ) -> Tuple[str, Optional[Dict[str, Any]]]:
         # Generate fresh nonce for attestation
         nonce = secrets.token_hex(32) if include_attestation else None
 
@@ -188,6 +205,51 @@ Output format: Pure JavaScript code only"""
 
             except Exception as e:
                 raise Exception(f"AI generation failed: {str(e)}")
+
+    async def _call_ollama(self, prompt: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """Call local Ollama server for code generation."""
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": "You are an expert programmer. Generate clean, runnable code."},
+                {"role": "user", "content": prompt},
+            ],
+            "options": {
+                "temperature": self.temperature,
+                "num_predict": self.max_tokens,
+            },
+            "stream": False,
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            try:
+                response = await client.post(f"{self.api_url}/api/chat", json=payload)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise Exception(f"Ollama call failed: {exc}") from exc
+
+        content_type = response.headers.get("content-type", "").lower()
+        content = ""
+        if "application/json" in content_type:
+            data = response.json()
+            content = data.get("message", {}).get("content", "")
+        else:
+            for line in response.text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                message = chunk.get("message") or {}
+                content += message.get("content", "")
+
+        if not content:
+            raise Exception(f"Unexpected Ollama response: {response.text[:200]}")
+
+        code = self._extract_code(content)
+        return code, None
 
     async def _fetch_attestation(
         self,

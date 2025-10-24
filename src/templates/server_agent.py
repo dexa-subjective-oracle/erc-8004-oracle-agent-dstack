@@ -3,7 +3,12 @@
 import asyncio
 import json
 import os
+import re
+import subprocess
+import sys
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -23,15 +28,17 @@ class ServerAgent(BaseAgent):
         self._oracle_task: Optional[asyncio.Task] = None
         self._oracle_poll_interval = int(os.getenv("ORACLE_POLL_INTERVAL", "30"))
         self._oracle_grace_seconds = int(os.getenv("ORACLE_SETTLEMENT_GRACE_SECONDS", "0"))
+        self._evidence_dir = Path(os.getenv("ORACLE_EVIDENCE_DIR", "state/evidence"))
+        self._recently_settled: Dict[str, int] = {}
 
-        # Initialize AI generator if API key is available
+        # Initialize AI generator if available
         self.ai_generator = None
-        if os.getenv("REDPILL_API_KEY"):
-            try:
-                from ..agent.ai_generator import AIScriptGenerator
-                self.ai_generator = AIScriptGenerator()
-            except Exception as e:
-                print(f"⚠️ AI Generator disabled: {e}")
+        try:
+            from ..agent.ai_generator import AIScriptGenerator
+
+            self.ai_generator = AIScriptGenerator()
+        except Exception as e:
+            print(f"⚠️ AI Generator disabled: {e}")
 
     async def process_task(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
         """Execute task via AIO Sandbox."""
@@ -100,21 +107,41 @@ class ServerAgent(BaseAgent):
 
         latest_block = await asyncio.to_thread(self._registry_client.w3.eth.get_block, "latest")
         now_ts = latest_block["timestamp"]
+        # Drop entries older than 5 minutes
+        expiration = now_ts - 300
+        self._recently_settled = {k: v for k, v in self._recently_settled.items() if v >= expiration}
         results: List[Dict[str, Any]] = []
 
         for request in pending:
             if request.settled:
                 continue
+            req_hex = request.request_id.hex()
+            if req_hex in self._recently_settled:
+                continue
             if not self._ready_to_settle(request, now_ts):
                 continue
-            price = price_override if price_override is not None else self._compute_price(request)
-            evidence_hash = self._build_evidence_hash(request, price, now_ts)
+            if price_override is not None:
+                price = price_override
+                evidence = self._build_manual_evidence(request, price, now_ts)
+            else:
+                resolution = await self._resolve_request_with_ai(request)
+                if not resolution:
+                    print(f"⚠️ Skipping request {request.request_id.hex()} due to failed resolution")
+                    continue
+                price = resolution["price"]
+                evidence = resolution["evidence"]
+                evidence["settledAt"] = now_ts
+
+            serialized = json.dumps(evidence, sort_keys=True)
+            evidence_hash = Web3.keccak(text=serialized)
 
             print(
                 f"⚙️ Settling request {request.request_id.hex()} | "
                 f"timestamp={request.timestamp} price={price}"
             )
             tx_hash = await asyncio.to_thread(self.oracle_client.settle_price, request, price, evidence_hash)
+            self._recently_settled[req_hex] = now_ts
+            self._persist_evidence(request.request_id.hex(), evidence)
             print(f"✅ Settlement submitted: tx={tx_hash}")
             results.append(
                 {
@@ -150,18 +177,18 @@ class ServerAgent(BaseAgent):
             return value % 1_000_000
         return 0
 
-    def _build_evidence_hash(self, request, price: int, settled_at: int) -> bytes:
+    def _build_manual_evidence(self, request, price: int, settled_at: int) -> Dict[str, Any]:
         ancillary = self._decode_ancillary(request.ancillary_data)
-        payload = {
+        return {
             "requestId": request.request_id.hex(),
             "identifier": Web3.to_hex(request.identifier),
             "timestamp": request.timestamp,
-            "settledAt": settled_at,
-            "price": price,
             "ancillary": ancillary,
+            "decision": "OVERRIDE",
+            "reason": "Operator-supplied price override",
+            "price": price,
+            "settledAt": settled_at,
         }
-        serialized = json.dumps(payload, sort_keys=True)
-        return Web3.keccak(text=serialized)
 
     @staticmethod
     def _decode_ancillary(data: bytes) -> str:
@@ -171,6 +198,284 @@ class ServerAgent(BaseAgent):
             return data.decode("utf-8")
         except UnicodeDecodeError:
             return data.hex()
+
+    async def _resolve_request_with_ai(self, request) -> Optional[Dict[str, Any]]:
+        if not self.ai_generator:
+            return None
+
+        ancillary_text = self._decode_ancillary(request.ancillary_data)
+        task = self._build_resolution_task(ancillary_text)
+        context: Optional[Dict[str, Any]] = {
+            "request": {
+                "requestId": request.request_id.hex(),
+                "identifier": Web3.to_hex(request.identifier),
+                "timestamp": request.timestamp,
+                "ancillary": ancillary_text,
+            }
+        }
+
+        attempts = 0
+        last_error: Optional[str] = None
+        code = ""
+        attestation = None
+
+        while attempts < 3:
+            try:
+                code, attestation = await self.ai_generator.generate_python_script(
+                    task_description=task,
+                    context=context,
+                    include_attestation=False,
+                )
+            except Exception as exc:
+                last_error = str(exc)
+                print(f"⚠️ AI generation failed: {exc}")
+                break
+
+            execution = self._execute_generated_python(code)
+            if execution["success"]:
+                decision = execution["decision"]
+                price = 1 if decision == "YES" else 0
+                evidence: Dict[str, Any] = {
+                    "requestId": request.request_id.hex(),
+                    "identifier": Web3.to_hex(request.identifier),
+                    "timestamp": request.timestamp,
+                    "ancillary": ancillary_text,
+                    "decision": decision,
+                    "reason": execution.get("reason"),
+                    "price": price,
+                    "data": execution.get("data"),
+                    "script": code,
+                    "stdout": execution["stdout"],
+                    "stderr": execution["stderr"],
+                    "executedAt": datetime.utcnow().isoformat(),
+                }
+                if attestation:
+                    evidence["attestation"] = attestation
+                return {"price": price, "evidence": evidence}
+
+            last_error = execution["stderr"] or execution["stdout"]
+            display_error = " | ".join((last_error or "no output").splitlines()[:3])
+            print(
+                f"⚠️ AI execution failed for request {request.request_id.hex()}: "
+                f"{display_error}"
+            )
+            context = {
+                "previous_code": code,
+                "error": last_error or "Unknown error",
+            }
+            attempts += 1
+
+        display_error = (last_error or "unknown error").strip()
+        print(
+            f"⚠️ Failed to resolve request {request.request_id.hex()} after retries. "
+            f"Last error: {display_error[:240]}"
+        )
+
+        # Attempt deterministic template fallback
+        fallback = self._fallback_price_script(ancillary_text)
+        if fallback:
+            execution = self._execute_generated_python(fallback)
+            if execution["success"]:
+                decision = execution["decision"]
+                evidence: Dict[str, Any] = {
+                    "requestId": request.request_id.hex(),
+                    "identifier": Web3.to_hex(request.identifier),
+                    "timestamp": request.timestamp,
+                    "ancillary": ancillary_text,
+                    "decision": decision,
+                    "reason": execution.get("reason"),
+                    "price": execution.get("data", {}).get("price"),
+                    "data": execution.get("data"),
+                    "script": fallback,
+                    "stdout": execution["stdout"],
+                    "stderr": execution["stderr"],
+                    "executedAt": datetime.utcnow().isoformat(),
+                    "strategy": "template_price_check",
+                }
+                return {"price": 1 if decision == "YES" else 0, "evidence": evidence}
+            else:
+                print(
+                    f"⚠️ Fallback template execution failed for request {request.request_id.hex()}: "
+                    f"stdout={execution['stdout'][:120]} stderr={execution['stderr'][:120]}"
+                )
+
+        return None
+
+    def _build_resolution_task(self, ancillary_text: str) -> str:
+        return (
+            "You are writing a Python script that resolves an oracle question.\n"
+            "Follow these rules carefully:\n"
+            "1. Determine whether the answer should be YES or NO.\n"
+            "2. Fetch any required data (HTTP requests with the 'requests' library) based on the text below.\n"
+            "3. Handle API errors gracefully and document failures via the reason field.\n"
+            "4. Define a function `resolve_oracle()` that returns a dict with keys:\n"
+            "   - decision: 'YES' or 'NO'\n"
+            "   - reason: short human-readable explanation\n"
+            "   - data: optional supporting values (e.g. fetched price)\n"
+            "5. KEEP EVERY STRING LITERAL (ESPECIALLY URLs) ON A SINGLE LINE AND WRAP IT IN DOUBLE QUOTES.\n"
+            "6. NEVER break URLs across lines.\n"
+            "7. At the bottom of the script include:\n"
+            "   if __name__ == \"__main__\":\n"
+            "       import json\n"
+            "       result = resolve_oracle()\n"
+            "       print(json.dumps(result))\n"
+            "8. Use only standard libraries plus 'requests', 'json', and 'datetime'.\n"
+            "9. Output raw Python code only (no markdown fences).\n\n"
+            "Oracle question:\n"
+            f"{ancillary_text}\n"
+        )
+
+    def _execute_generated_python(self, code: str) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "success": False,
+            "stdout": "",
+            "stderr": "",
+            "decision": "UNKNOWN",
+            "reason": None,
+            "data": None,
+        }
+
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tmp_file:
+            tmp_file.write(code)
+            script_path = tmp_file.name
+
+        try:
+            proc = subprocess.run(
+                [sys.executable, script_path],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            result["stdout"] = proc.stdout.strip()
+            result["stderr"] = proc.stderr.strip()
+
+            if proc.returncode != 0:
+                return result
+
+            payload = self._extract_json_payload(proc.stdout)
+            if not payload:
+                return result
+
+            decision = str(payload.get("decision", "")).strip().upper()
+            if decision not in {"YES", "NO"}:
+                return result
+
+            result["decision"] = decision
+            result["reason"] = payload.get("reason")
+            result["data"] = payload.get("data")
+            result["success"] = True
+            return result
+        except subprocess.TimeoutExpired:
+            result["stderr"] = "Execution timed out"
+            return result
+        except Exception as exc:
+            result["stderr"] = str(exc)
+            return result
+        finally:
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _extract_json_payload(stdout: str) -> Optional[Dict[str, Any]]:
+        lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+        for line in reversed(lines):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+        return None
+
+    def _persist_evidence(self, request_id: str, evidence: Dict[str, Any]) -> None:
+        try:
+            self._evidence_dir.mkdir(parents=True, exist_ok=True)
+            path = self._evidence_dir / f"{request_id}.json"
+            with path.open("w", encoding="utf-8") as handle:
+                json.dump(evidence, handle, indent=2)
+        except Exception as exc:
+            print(f"⚠️ Failed to persist evidence for {request_id}: {exc}")
+
+    def _fallback_price_script(self, ancillary_text: str) -> Optional[str]:
+        url_match = re.search(r"https?://[\w\-./:%?#=&]+", ancillary_text)
+        if not url_match:
+            print("⚠️ Fallback price script: no URL detected")
+            return None
+
+        numbers = re.findall(r"[-+]?[0-9]*\.?[0-9]+", ancillary_text)
+        threshold = None
+        for value in numbers:
+            try:
+                threshold = float(value)
+                break
+            except ValueError:
+                continue
+        if threshold is None:
+            print("⚠️ Fallback price script: no numeric threshold detected")
+            return None
+
+        lowered = ancillary_text.lower()
+        if "below" in lowered or "less" in lowered:
+            operator = "below"
+        else:
+            operator = "above"
+
+        script = f"""import json
+import requests
+from datetime import datetime
+
+API_URL = "{url_match.group(0)}"
+THRESHOLD = {threshold}
+OPERATOR = "{operator}"
+
+
+def fetch_price():
+    response = requests.get(API_URL, timeout=10)
+    response.raise_for_status()
+    data = response.json()
+    price = float(data.get("Price"))
+    return price, data
+
+
+def resolve_oracle():
+    try:
+        price, raw = fetch_price()
+        meets = price >= THRESHOLD if OPERATOR == "above" else price <= THRESHOLD
+        decision = "YES" if meets else "NO"
+        comparison = ">=" if OPERATOR == "above" else "<="
+        reason = f"Price {{price:.2f}} {{comparison}} {{THRESHOLD}}"
+        return {{
+            "decision": decision,
+            "reason": reason,
+            "data": {{
+                "price": price,
+                "threshold": THRESHOLD,
+                "operator": OPERATOR,
+                "timestamp": raw.get("Time"),
+                "source": raw.get("Source"),
+            }},
+        }}
+    except Exception as exc:
+        return {{
+            "decision": "NO",
+            "reason": f"Failed to fetch data: {{exc}}",
+            "data": None,
+        }}
+
+
+if __name__ == "__main__":
+    result = resolve_oracle()
+    print(json.dumps(result))
+"""
+        print(
+            "ℹ️ Using fallback price script:",
+            {
+                "url": url_match.group(0),
+                "threshold": threshold,
+                "operator": operator,
+            },
+        )
+        return script
 
     async def _execute_shell(self, command: str) -> Dict[str, Any]:
         """Execute shell command via sandbox."""
