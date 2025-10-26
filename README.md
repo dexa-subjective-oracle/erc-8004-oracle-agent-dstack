@@ -35,7 +35,7 @@ The sections below are being updated to match this more focused setup and to fla
    ```bash
    docker compose --env-file docker/.env.docker up --build
    ```
-   This starts two services: `agent` (FastAPI + resolver) and `scheduler` (price requests). Both share the `agent-state` volume.
+   This starts three services: `ollama` (Gemma backend), `agent` (FastAPI + resolver), and `scheduler` (price requests). The agent and scheduler share the `agent-state` volume.
 
 3. **Observe the flow**
    - `docker compose logs -f agent`
@@ -49,11 +49,33 @@ The sections below are being updated to match this more focused setup and to fla
    rm docker/.env.docker                                      # optional cleanup
    ```
 
+### Docker Setup Guide (Detailed)
+
+1. **Seed configuration**
+   - Run `cp docker/.env.docker.example docker/.env.docker`.
+   - Fill in `BASE_SEPOLIA_RPC_URL`, `RPC_URL`, and `RESOLVER_PRIVATE_KEY` with funded credentials. Keep this file out of git.
+   - Optional: set `OLLAMA_BOOTSTRAP_MODELS` (comma separated) to preload additional models.
+2. **Launch the stack**
+   - Execute `docker compose --env-file docker/.env.docker up --build`.
+   - The first boot downloads ~3.3 GB for `gemma3:4b`; expect a several-minute pull before the agent starts.
+3. **Confirm readiness**
+   - `docker compose ps` should show `ollama`, `agent`, and `scheduler` as `Up`.
+   - `docker compose logs -f ollama` ends with `Ready. Serving models.`; the agent log shows `✅ AGENT SERVER READY`.
+   - Visit http://localhost:8000/evidence to ensure the FastAPI service responds.
+4. **Monitor activity**
+   - Tail `docker compose logs -f scheduler` for `Queued question` entries and `docker compose logs -f agent` for `Settlement submitted` lines.
+   - Evidence artifacts appear under the `agent-state` volume (`state/evidence/` inside the container).
+5. **Clean up safely**
+   - Use `docker compose down` to stop services.
+   - Remove `erc-8004-oracle-agent-dstack_agent-state` to reset agent state and `erc-8004-oracle-agent-dstack_ollama-data` to reclaim model storage.
+
+
 ## Operational Touchpoints
 
 | Component / Endpoint               | Purpose                                                                 | Notes |
 |------------------------------------|-------------------------------------------------------------------------|-------|
 | `docker/.env.docker`               | Central configuration (RPC URLs, cadence, AI parameters, resolver key). | Copy from `.example`; never commit real secrets. |
+| `ollama` service                   | Hosts the local Gemma3 model (`ollama/ollama` container).               | Exposes `${OLLAMA_HOST_PORT:-11434}`; edit compose for GPU flags if needed. |
 | `scripts/schedule_oracle_requests.py` | Issues `requestPrice` calls against TeeOracle on a schedule.              | Uses DIA BTC price feed; interval/lookahead configurable. |
 | FastAPI `/health`                  | Liveness probe for the agent container.                                 | Returns JSON heartbeat. |
 | FastAPI `/api/status`              | Displays on-chain registration & resolver status.                        | Useful when debugging manual CLI runs. |
@@ -89,6 +111,11 @@ The repository still contains template-era scaffolding that we intend to remove.
 5. **Simplify TEE verifier proof mode** – proof registration is still stubbed. Either implement fully or cut until we have a concrete requirement.
 
 Please open a GitHub issue before tackling any of these so we can coordinate sequencing.
+See [`docs/cleanup-plan.md`](docs/cleanup-plan.md) for the detailed scope and owners.
+
+## Legacy Reference (Under Review)
+
+> The sections below are carried over from the broader template. Treat them as background only until the cleanup plan above retires or rewrites them.
 
 ## Documentation
 

@@ -39,7 +39,7 @@ Add your RedPill API key to `.env`:
 ```bash
 # Local Ollama settings
 AI_PROVIDER=ollama
-AI_API_BASE=http://127.0.0.1:11434/v1
+AI_API_BASE=http://ollama:11434/v1  # use http://127.0.0.1:11434/v1 when running outside Docker Compose
 AI_API_KEY=ollama
 OLLAMA_MODEL=gemma3:4b
 AI_MODEL=gemma3:4b

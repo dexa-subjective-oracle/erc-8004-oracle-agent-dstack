@@ -23,12 +23,13 @@ From the agent directory:
 docker compose --env-file docker/.env.docker up --build
 ```
 
-Compose spins up two services using the shared image built from the local sources:
+Compose spins up three services using the shared image built from the local sources:
 
+- **ollama** — serves the Gemma 3 4B model on `OLLAMA_HOST_PORT` (default `11434`).
 - **agent** — runs `deployment/local_agent_server.py`, registers the manual resolver key, starts the oracle worker, and exposes FastAPI on port `AGENT_HOST_PORT` (default `8000`).
 - **scheduler** — runs `scripts/schedule_oracle_requests.py` on the configured cadence, queueing new UMA requests against the Base Sepolia contracts.
 
-Both services share the `agent-state` named volume, which holds `state/` artifacts (agent ID, evidence, debug files).
+The agent and scheduler share the `agent-state` named volume, which holds `state/` artifacts (agent ID, evidence, debug files). The Ollama container uses the `ollama-data` volume to cache downloaded models.
 
 ## 3. Monitor & interact
 
@@ -36,6 +37,7 @@ Both services share the `agent-state` named volume, which holds `state/` artifac
   ```bash
   docker compose logs -f agent
   docker compose logs -f scheduler
+  docker compose logs -f ollama
   ```
 - Browse evidence artifacts: http://localhost:8000/evidence
 - Inspect pending requests or settled txs with `cast`, using the environment variables from `docker/.env.docker`.
@@ -46,7 +48,13 @@ Both services share the `agent-state` named volume, which holds `state/` artifac
 ```bash
 docker compose down
 docker volume rm erc-8004-oracle-agent-dstack_agent-state  # optional: clear state
+docker volume rm erc-8004-oracle-agent-dstack_ollama-data   # optional: clear Ollama cache
 rm docker/.env.docker                                       # optional: remove secrets
 ```
+
+### GPU Notes
+
+- **NVIDIA**: install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and add `--gpus all` (or `runtime: nvidia`) to the `ollama` service in `docker-compose.yml`.
+- **AMD**: swap the image for `ollama/ollama:rocm` and mount `/dev/kfd` + `/dev/dri` per Ollama’s documentation.
 
 You now have a single-command workflow to run the Base Sepolia subjective-oracle demo end to end in Docker.
