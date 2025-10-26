@@ -7,8 +7,8 @@ Build trustless AI agents with [dstack](https://github.com/dstack-tee/dstack), E
 The template has been narrowed to a single opinionated workflow that mirrors how we operate the subjective oracle stack today:
 
 1. **Request Scheduler** (`scripts/schedule_oracle_requests.py`) runs continuously, pulling BTC spot data from DiaData and calling `TeeOracle.requestPrice` on Base Sepolia. The cadence, lookahead, and spread are controlled through environment variables (see `docker/.env.docker.example`).
-2. **Agent Service** (`deployment/local_agent_server.py`) boots a FastAPI server, ensures the resolver key is registered (manual mode), watches `pendingRequests()`, and settles requests once the grace period expires.
-3. **AI Resolution** is handled locally through Ollama (Gemma 3 4B). The worker fetches DIA prices, produces structured evidence, and submits `settlePrice`. Evidence is persisted under `state/evidence/` and exposed via the `/evidence` explorer.
+2. **Agent Service** (`deployment/local_agent_server.py`) boots a FastAPI server, ensures the resolver key is registered (manual mode), watches `pendingRequests()`, and immediately generates + analyses a settlement script for each new question, logging the code and confidence score while it waits for the grace period to expire.
+3. **AI Resolution** is handled locally through Ollama (Gemma 3 4B). When the execution window opens, the pre-generated script runs to fetch DIA prices, produces structured evidence (including the analysis metadata), and submits `settlePrice`. Evidence is persisted under `state/evidence/` and exposed via the `/evidence` explorer.
 4. **Docker Compose** (`docker-compose.yml`) bundles both components (agent + scheduler) so a developer can simply run `docker compose --env-file docker/.env.docker up --build` and observe the full loop end-to-end.
 
 The sections below are being updated to match this more focused setup and to flag legacy scaffolding slated for removal.

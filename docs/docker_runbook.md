@@ -39,6 +39,7 @@ The agent and scheduler share the `agent-state` named volume, which holds `state
   docker compose logs -f scheduler
   docker compose logs -f ollama
   ```
+- The agent stream prints each generated script and its confidence rating; look for `Prepared script ... (confidence: HIGH|MEDIUM|LOW)` before the settlement window hits.
 - Browse evidence artifacts: http://localhost:8000/evidence
 - Inspect pending requests or settled txs with `cast`, using the environment variables from `docker/.env.docker`.
 - The FastAPI docs remain reachable at http://localhost:8000/docs.

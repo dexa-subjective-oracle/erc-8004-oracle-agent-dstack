@@ -1,5 +1,6 @@
 """Server Agent - AIO Sandbox Integration"""
 
+import ast
 import asyncio
 import json
 import os
@@ -9,7 +10,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 from web3 import Web3
@@ -33,6 +34,9 @@ class ServerAgent(BaseAgent):
         self._failure_state: Dict[str, Dict[str, int]] = {}
         self._max_ai_failures = int(os.getenv("ORACLE_AI_MAX_FAILURES", "3"))
         self._ai_failure_backoff = int(os.getenv("ORACLE_AI_FAILURE_BACKOFF", "180"))
+        self._prepared_requests: Dict[str, Dict[str, Any]] = {}
+        self._max_ai_prepare_attempts = int(os.getenv("ORACLE_AI_PREPARE_ATTEMPTS", "3"))
+        self._max_ai_settlement_attempts = int(os.getenv("ORACLE_AI_SETTLEMENT_ATTEMPTS", "2"))
 
         # Initialize AI generator if available
         self.ai_generator = None
@@ -116,12 +120,11 @@ class ServerAgent(BaseAgent):
         results: List[Dict[str, Any]] = []
 
         for request in pending:
-            if request.settled:
-                continue
             req_hex = request.request_id.hex()
-            if req_hex in self._recently_settled:
+            if request.settled:
+                self._prepared_requests.pop(req_hex, None)
                 continue
-            if not self._ready_to_settle(request, now_ts):
+            if req_hex in self._recently_settled:
                 continue
 
             failure_state = self._failure_state.get(req_hex)
@@ -131,18 +134,25 @@ class ServerAgent(BaseAgent):
                 if failures >= self._max_ai_failures and now_ts - last_failure < self._ai_failure_backoff:
                     continue
 
+            if price_override is None and req_hex not in self._prepared_requests:
+                prepared, _ = await self._prepare_request(request, now_ts)
+                if req_hex not in self._prepared_requests:
+                    # Preparation failed or deferred; wait until a later cycle.
+                    continue
+
+            if not self._ready_to_settle(request, now_ts):
+                continue
+
             if price_override is not None:
                 price = price_override
                 evidence = self._build_manual_evidence(request, price, now_ts)
             else:
-                resolution, error = await self._resolve_request_with_ai(request)
+                resolution, error = await self._resolve_request_with_ai(request, now_ts)
                 if not resolution:
-                    self._record_ai_failure(req_hex, now_ts, error)
                     continue
                 price = resolution["price"]
                 evidence = resolution["evidence"]
                 evidence["settledAt"] = now_ts
-                self._failure_state.pop(req_hex, None)
 
             serialized = json.dumps(evidence, sort_keys=True)
             evidence_hash = Web3.keccak(text=serialized)
@@ -153,6 +163,8 @@ class ServerAgent(BaseAgent):
             )
             tx_hash = await asyncio.to_thread(self.oracle_client.settle_price, request, price, evidence_hash)
             self._recently_settled[req_hex] = now_ts
+            self._failure_state.pop(req_hex, None)
+            self._prepared_requests.pop(req_hex, None)
             evidence["txHash"] = tx_hash
             self._persist_evidence(request.request_id.hex(), evidence)
             print(f"✅ Settlement submitted: tx={tx_hash}")
@@ -200,102 +212,261 @@ class ServerAgent(BaseAgent):
         except UnicodeDecodeError:
             return data.hex()
 
-    async def _resolve_request_with_ai(self, request) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    async def _resolve_request_with_ai(self, request, now_ts: int) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         if not self.ai_generator:
             return None, "AI generator unavailable"
+
+        req_hex = request.request_id.hex()
+        prepared = self._prepared_requests.get(req_hex)
+        override_context: Optional[Dict[str, Any]] = None
+        attempts = 0
+        last_error: Optional[str] = None
+
+        while attempts < self._max_ai_settlement_attempts:
+            if not prepared:
+                prepared, prep_error = await self._prepare_request(
+                    request,
+                    now_ts,
+                    override_context=override_context,
+                    record_failure=False,
+                )
+                if not prepared:
+                    last_error = prep_error
+                    break
+
+            confidence = prepared.get("confidence", "UNKNOWN")
+            print(
+                f"🕛 Execution window reached for request {req_hex}; "
+                f"executing prepared script (confidence: {confidence})"
+            )
+            resolution, error = await self._execute_prepared_script(request, prepared)
+            if resolution:
+                return resolution, None
+
+            last_error = error or "Execution failure"
+            print(f"⚠️ Execution error for request {req_hex}: {last_error[:240]}")
+            override_context = {
+                "previous_code": prepared["script"],
+                "error": last_error,
+            }
+            self._prepared_requests.pop(req_hex, None)
+            prepared = None
+            attempts += 1
+
+        if last_error:
+            self._record_ai_failure(req_hex, now_ts, last_error)
+        return None, last_error
+
+    async def _prepare_request(
+        self,
+        request,
+        now_ts: int,
+        *,
+        override_context: Optional[Dict[str, Any]] = None,
+        record_failure: bool = True,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        if not self.ai_generator:
+            return None, "AI generator unavailable"
+
+        req_hex = request.request_id.hex()
+        if req_hex in self._prepared_requests and not override_context:
+            return self._prepared_requests[req_hex], None
 
         ancillary_text = self._decode_ancillary(request.ancillary_data)
         sanitized_ancillary, placeholders = self._sanitize_ancillary(ancillary_text)
         task = self._build_resolution_task(sanitized_ancillary, placeholders)
-        context: Optional[Dict[str, Any]] = {
+
+        base_context: Dict[str, Any] = {
             "request": {
-                "requestId": request.request_id.hex(),
+                "requestId": req_hex,
                 "identifier": Web3.to_hex(request.identifier),
                 "timestamp": request.timestamp,
                 "ancillary": sanitized_ancillary,
             }
         }
         if placeholders:
-            context["placeholders"] = [
+            base_context["placeholders"] = [
                 {"token": token, "description": meta["description"], "const": meta["const"]}
                 for token, meta in placeholders.items()
             ]
 
+        context = {**base_context}
+        if override_context:
+            context.update(override_context)
+
         attempts = 0
         last_error: Optional[str] = None
-        code = ""
-        attestation = None
 
-        while attempts < 3:
+        while attempts < self._max_ai_prepare_attempts:
             try:
-                code, attestation = await self.ai_generator.generate_python_script(
+                code, _ = await self.ai_generator.generate_python_script(
                     task_description=task,
                     context=context,
                     include_attestation=False,
                 )
             except Exception as exc:
                 last_error = str(exc)
-                print(f"⚠️ AI generation failed: {exc}")
+                print(f"⚠️ AI generation failed for request {req_hex}: {last_error}")
                 break
 
             restored_code = self._restore_placeholders(code, placeholders)
-            execution = self._execute_generated_python(restored_code)
-            if execution["success"]:
-                decision = execution["decision"]
-                price = 1 if decision == "YES" else 0
-                evidence: Dict[str, Any] = {
-                    "requestId": request.request_id.hex(),
-                    "identifier": Web3.to_hex(request.identifier),
-                    "timestamp": request.timestamp,
-                    "ancillary": ancillary_text,
-                    "decision": decision,
-                    "reason": execution.get("reason"),
-                    "price": price,
-                    "data": execution.get("data"),
-                    "script": restored_code,
-                    "stdout": execution["stdout"],
-                    "stderr": execution["stderr"],
-                    "executedAt": datetime.utcnow().isoformat(),
-                }
-                if attestation:
-                    evidence["attestation"] = attestation
-                return {"price": price, "evidence": evidence}, None
+            self._log_script_preview(req_hex, restored_code)
+            analysis = self._analyze_script(restored_code)
+            confidence = self._confidence_label(analysis)
 
-            last_error = execution["stderr"] or execution["stdout"]
-            try:
-                debug_dir = Path(os.getenv("ORACLE_DEBUG_DIR", "state/debug"))
-                debug_dir.mkdir(parents=True, exist_ok=True)
-                attempt_label = f"{request.request_id.hex()}-try{attempts + 1}"
-                (debug_dir / f"{attempt_label}.py").write_text(restored_code, encoding="utf-8")
-                if execution["stderr"]:
-                    (debug_dir / f"{attempt_label}.stderr").write_text(execution["stderr"], encoding="utf-8")
-                if execution["stdout"]:
-                    (debug_dir / f"{attempt_label}.stdout").write_text(execution["stdout"], encoding="utf-8")
-            except Exception as debug_exc:
-                print(f"⚠️ Failed to persist debug artifacts for request {request.request_id.hex()}: {debug_exc}")
-            error_tail = ""
-            if last_error:
-                tail_lines = last_error.strip().splitlines()
-                if tail_lines:
-                    error_tail = tail_lines[-1]
-            display_error = " | ".join((last_error or "no output").splitlines()[:3])
-            print(
-                f"⚠️ AI execution failed for request {request.request_id.hex()}: "
-                f"{display_error}"
-                + (f" | {error_tail}" if error_tail and error_tail not in display_error else "")
-            )
-            context = {
-                "previous_code": code,
-                "error": last_error or "Unknown error",
-            }
+            if analysis["issues"]:
+                issue_summary = "; ".join(analysis["issues"])
+                print(f"⚠️ Script analysis issues for request {req_hex}: {issue_summary[:240]}")
+            if analysis["warnings"]:
+                warning_summary = "; ".join(analysis["warnings"])
+                print(f"ℹ️ Script analysis warnings for request {req_hex}: {warning_summary[:240]}")
+
+            if analysis["success"]:
+                prepared_payload: Dict[str, Any] = {
+                    "script": restored_code,
+                    "analysis": analysis,
+                    "confidence": confidence,
+                    "ancillary": ancillary_text,
+                    "preparedAt": datetime.utcnow().isoformat(),
+                }
+                self._prepared_requests[req_hex] = prepared_payload
+                print(f"✅ Prepared script for request {req_hex} (confidence: {confidence})")
+                if record_failure:
+                    self._failure_state.pop(req_hex, None)
+                return prepared_payload, None
+
+            last_error = "; ".join(analysis["issues"]) or "Analysis failed"
+            context = {**base_context, "previous_code": restored_code, "error": last_error}
             attempts += 1
 
-        display_error = (last_error or "unknown error").strip()
-        print(
-            f"⚠️ Failed to resolve request {request.request_id.hex()} after retries. "
-            f"Last error: {display_error[:240]}"
-        )
-        return None, display_error
+        if record_failure and last_error:
+            self._record_ai_failure(req_hex, now_ts, last_error)
+        return None, last_error
+
+    def _analyze_script(self, code: str) -> Dict[str, Any]:
+        issues: List[str] = []
+        warnings: List[str] = []
+
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as exc:
+            issues.append(f"Syntax error on line {exc.lineno}: {exc.msg}")
+            return {"success": False, "issues": issues, "warnings": warnings}
+
+        has_resolve = False
+        resolve_returns = False
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "resolve_oracle":
+                has_resolve = True
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.Return):
+                        resolve_returns = True
+                        break
+                break
+
+        if not has_resolve:
+            issues.append("resolve_oracle() function not defined")
+        elif not resolve_returns:
+            issues.append("resolve_oracle() does not return a value")
+
+        has_main_guard = False
+        for node in tree.body:
+            if isinstance(node, ast.If):
+                test = node.test
+                if (
+                    isinstance(test, ast.Compare)
+                    and isinstance(test.left, ast.Name)
+                    and test.left.id == "__name__"
+                    and any(isinstance(op, ast.Eq) for op in test.ops)
+                    and any(
+                        (
+                            isinstance(comp, ast.Constant) and comp.value == "__main__"
+                        )
+                        or (
+                            isinstance(comp, ast.Str) and comp.s == "__main__"
+                        )
+                        for comp in test.comparators
+                    )
+                ):
+                    has_main_guard = True
+                    break
+        if not has_main_guard:
+            warnings.append('Missing `if __name__ == "__main__"` guard')
+
+        imports: Set[str] = set()
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                imports.update(alias.name.split('.')[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imports.add(node.module.split('.')[0])
+
+        if "requests" not in imports:
+            warnings.append("requests module not imported")
+        if "json" not in imports:
+            warnings.append("json module not imported")
+
+        return {"success": len(issues) == 0, "issues": issues, "warnings": warnings}
+
+    @staticmethod
+    def _confidence_label(analysis: Dict[str, Any]) -> str:
+        if not analysis.get("success"):
+            return "LOW"
+        warnings = analysis.get("warnings") or []
+        return "HIGH" if not warnings else "MEDIUM"
+
+    @staticmethod
+    def _log_script_preview(request_id: str, script: str) -> None:
+        divider = "-" * 60
+        print(f"\n📝 Generated script for request {request_id}:\n{divider}\n{script}\n{divider}\n")
+
+    async def _execute_prepared_script(
+        self,
+        request,
+        prepared: Dict[str, Any],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        code = prepared["script"]
+        req_hex = request.request_id.hex()
+        execution = self._execute_generated_python(code)
+
+        if execution["success"]:
+            decision = execution["decision"]
+            price = 1 if decision == "YES" else 0
+            evidence: Dict[str, Any] = {
+                "requestId": req_hex,
+                "identifier": Web3.to_hex(request.identifier),
+                "timestamp": request.timestamp,
+                "ancillary": prepared.get("ancillary"),
+                "decision": decision,
+                "reason": execution.get("reason"),
+                "price": price,
+                "data": execution.get("data"),
+                "script": code,
+                "stdout": execution["stdout"],
+                "stderr": execution["stderr"],
+                "executedAt": datetime.utcnow().isoformat(),
+                "analysis": prepared.get("analysis"),
+                "analysisConfidence": prepared.get("confidence"),
+                "preparedAt": prepared.get("preparedAt"),
+            }
+            return {"price": price, "evidence": evidence}, None
+
+        error_message = execution["stderr"] or execution["stdout"]
+        self._persist_execution_debug(req_hex, code, execution)
+        return None, error_message
+
+    def _persist_execution_debug(self, request_id: str, code: str, execution: Dict[str, Any]) -> None:
+        try:
+            debug_dir = Path(os.getenv("ORACLE_DEBUG_DIR", "state/debug"))
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            timestamp_suffix = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+            base = f"{request_id}-exec-{timestamp_suffix}"
+            (debug_dir / f"{base}.py").write_text(code, encoding="utf-8")
+            if execution.get("stderr"):
+                (debug_dir / f"{base}.stderr").write_text(execution["stderr"], encoding="utf-8")
+            if execution.get("stdout"):
+                (debug_dir / f"{base}.stdout").write_text(execution["stdout"], encoding="utf-8")
+        except Exception as debug_exc:
+            print(f"⚠️ Failed to persist debug artifacts for request {request_id}: {debug_exc}")
 
     def _record_ai_failure(self, request_id: str, now_ts: int, error: Optional[str]) -> None:
         state = self._failure_state.get(request_id, {"count": 0, "last": 0})
