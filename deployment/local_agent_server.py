@@ -11,17 +11,20 @@ import os
 import asyncio
 import json
 import hashlib
+from pathlib import Path
+from html import escape
+from urllib.parse import quote
 from dotenv import load_dotenv
 
 load_dotenv()
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from eth_account.messages import encode_defunct
@@ -63,6 +66,43 @@ app.mount("/static", StaticFiles(directory=static_path), name="static")
 agent: Optional[ServerAgent] = None
 tee_auth: Optional[TEEAuthenticator] = None
 tee_verifier: Optional[TEEVerifier] = None
+
+STATE_DIR = Path(os.getenv("STATE_DIR", "state"))
+EVIDENCE_DIR = Path(os.getenv("ORACLE_EVIDENCE_DIR") or (STATE_DIR / "evidence"))
+EVIDENCE_ROOT = EVIDENCE_DIR.resolve(strict=False)
+
+
+def _format_bytes(num: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(num)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} {unit}"
+        size /= 1024
+
+
+def _collect_evidence_entries() -> List[Dict[str, Any]]:
+    if not EVIDENCE_DIR.exists():
+        return []
+    entries: List[Dict[str, Any]] = []
+    for file_path in sorted(EVIDENCE_DIR.rglob("*"), key=lambda p: p.stat().st_mtime if p.is_file() else 0, reverse=True):
+        if not file_path.is_file():
+            continue
+        stat = file_path.stat()
+        rel = file_path.relative_to(EVIDENCE_DIR)
+        entries.append(
+            {
+                "name": rel.as_posix(),
+                "size": stat.st_size,
+                "size_human": _format_bytes(stat.st_size),
+                "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                "view_url": f"/evidence/{quote(rel.as_posix())}",
+                "download_url": f"/evidence/{quote(rel.as_posix())}?download=1",
+            }
+        )
+    return entries
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize agent on startup."""
@@ -183,9 +223,15 @@ async def startup_event():
         print("⚠️ Proof-based key registration not yet automated in this server build.")
 
     if agent.oracle_client:
-        initial_settlements = await agent.run_oracle_cycle()
-        if initial_settlements:
-            print(f"⚖️ Settled {len(initial_settlements)} pending requests on startup")
+        async def _initial_settlement_run() -> None:
+            try:
+                results = await agent.run_oracle_cycle()
+                if results:
+                    print(f"⚖️ Settled {len(results)} pending requests on startup")
+            except Exception as exc:  # pragma: no cover - debug aid
+                print(f"⚠️ Initial oracle cycle failed: {exc}")
+
+        asyncio.create_task(_initial_settlement_run(), name="oracle-initial-cycle")
         await agent.start_oracle_worker()
 
     # Generate agent card
@@ -799,6 +845,141 @@ async def execute_task(task_id: str, request: Dict[str, Any]):
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.get("/evidence", response_class=HTMLResponse)
+async def evidence_index():
+    """Render an HTML index of stored evidence artifacts."""
+    entries = _collect_evidence_entries()
+
+    rows = ""
+    for entry in entries:
+        rows += (
+            "<tr>"
+            f"<td>{escape(entry['name'])}</td>"
+            f"<td>{escape(entry['size_human'])}</td>"
+            f"<td>{escape(entry['modified'])}</td>"
+            f"<td><a href=\"{entry['view_url']}\">View</a> | "
+            f"<a href=\"{entry['download_url']}\">Download</a></td>"
+            "</tr>"
+        )
+
+    content = "".join(
+        [
+            "<!DOCTYPE html>",
+            "<html><head><meta charset='utf-8'><title>Evidence Explorer</title>",
+            "<style>",
+            "body{font-family:Arial,Helvetica,sans-serif;margin:32px;background:#f8f9fb;}",
+            "table{border-collapse:collapse;width:100%;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.08);}",
+            "th,td{padding:12px 16px;text-align:left;border-bottom:1px solid #e5e7eb;font-size:14px;}",
+            "th{background:#111827;color:#f9fafb;text-transform:uppercase;letter-spacing:0.05em;font-size:12px;}",
+            "tr:hover{background:#f3f4f6;}",
+            "a{color:#2563eb;text-decoration:none;}",
+            "a:hover{text-decoration:underline;}",
+            "code{background:#e5e7eb;padding:2px 4px;border-radius:4px;}",
+            ".empty{padding:24px;text-align:center;color:#6b7280;background:#fff;border:1px dashed #d1d5db;border-radius:8px;}",
+            "</style></head><body>",
+            "<h1>Evidence Explorer</h1>",
+            f"<p>Root directory: <code>{escape(EVIDENCE_DIR.resolve(strict=False).as_posix())}</code></p>",
+        ]
+    )
+
+    if rows:
+        content += "<table><thead><tr><th>File</th><th>Size</th><th>Modified (UTC)</th><th>Actions</th></tr></thead><tbody>"
+        content += rows
+        content += "</tbody></table>"
+    else:
+        content += "<div class='empty'>No evidence files have been recorded yet.</div>"
+
+    content += "</body></html>"
+    return HTMLResponse(content)
+
+
+@app.get("/evidence/{file_path:path}")
+async def evidence_detail(file_path: str, download: bool = False):
+    """Serve evidence files either as download or rendered HTML."""
+    target_path = (EVIDENCE_DIR / file_path)
+    try:
+        resolved = target_path.resolve(strict=True)
+    except (FileNotFoundError, RuntimeError):
+        raise HTTPException(status_code=404, detail="Evidence not found")
+
+    # Ensure requested path stays within evidence directory
+    evidence_root = EVIDENCE_ROOT
+    if evidence_root not in resolved.parents and resolved != evidence_root:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Evidence not found")
+
+    if download:
+        return FileResponse(
+            str(resolved),
+            filename=resolved.name,
+            media_type="application/octet-stream",
+        )
+
+    metadata_display = ""
+    script_section = ""
+    try:
+        text = resolved.read_text(encoding="utf-8")
+        try:
+            parsed = json.loads(text)
+            sanitized = parsed
+            if isinstance(parsed, dict) and "script" in parsed:
+                script_value = parsed.get("script")
+                if script_value is not None:
+                    if not isinstance(script_value, str):
+                        script_value = json.dumps(script_value, indent=2)
+                    script_section = (
+                        "<h2>Generated Script</h2>"
+                        f"<pre class='code'>{escape(script_value)}</pre>"
+                    )
+                sanitized = dict(parsed)
+                sanitized.pop("script", None)
+            pretty = json.dumps(sanitized, indent=2, sort_keys=True)
+            metadata_display = escape(pretty)
+        except json.JSONDecodeError:
+            metadata_display = escape(text)
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=415,
+            detail="Evidence is binary; use ?download=1 to retrieve the file.",
+        )
+
+    rel_name = resolved.relative_to(EVIDENCE_DIR).as_posix()
+    back_link = "/evidence"
+    download_link = f"/evidence/{quote(rel_name)}?download=1"
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Evidence – {escape(rel_name)}</title>
+        <style>
+            body {{ font-family: Arial, Helvetica, sans-serif; margin: 32px; background: #f8f9fb; }}
+            pre {{ padding: 24px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.45; }}
+            pre.json {{ background: #111827; color: #f9fafb; }}
+            pre.code {{ background: #0b253d; color: #e3f2fd; }}
+            a {{ color: #2563eb; text-decoration: none; margin-right: 16px; }}
+            a:hover {{ text-decoration: underline; }}
+            h2 {{ margin-top: 32px; }}
+        </style>
+    </head>
+    <body>
+        <h1>Evidence: {escape(rel_name)}</h1>
+        <p>
+            <a href="{back_link}">← Back to overview</a>
+            <a href="{download_link}">Download</a>
+        </p>
+        <h2>Metadata</h2>
+        <pre class="json">{metadata_display}</pre>
+        {script_section}
+    </body>
+    </html>
+    """
+    return HTMLResponse(html_content)
 
 
 def main():

@@ -115,9 +115,14 @@ def status() -> None:
 
 
 @cli.command()
-@click.option("--price", default=0, help="Price value to settle with")
-def run(price: int) -> None:
-    """Settle any pending oracle requests using the dummy solver."""
+@click.option(
+    "--price-override",
+    type=int,
+    default=None,
+    help="Force a specific settlement price (omit to use AI resolution)"
+)
+def run(price_override: Optional[int]) -> None:
+    """Settle pending oracle requests (AI by default, optional manual override)."""
 
     async def _run() -> None:
         agent, tee_verifier, address = await _build_agent()
@@ -127,7 +132,9 @@ def run(price: int) -> None:
         if not agent.oracle_client:
             print("Oracle client not configured")
             return
-        results = await settle_pending_requests(agent, price)
+        mode = "manual override" if price_override is not None else "AI resolver"
+        print(f"Running oracle cycle using {mode}...")
+        results = await settle_pending_requests(agent, price_override)
         if not results:
             print("No pending requests")
         else:
@@ -169,11 +176,13 @@ def manual_remove(resolver: str) -> None:
     asyncio.run(_run())
 
 
-async def settle_pending_requests(agent: ServerAgent, price: int = 0):
+async def settle_pending_requests(agent: ServerAgent, price_override: Optional[int] = None):
     if not agent.oracle_client:
         return []
 
-    return await agent.run_oracle_cycle(price_override=price)
+    if price_override is None:
+        return await agent.run_oracle_cycle()
+    return await agent.run_oracle_cycle(price_override=price_override)
 
 
 if __name__ == "__main__":

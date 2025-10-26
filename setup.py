@@ -35,12 +35,15 @@ setup(
         "eth-account>=0.8.0",
         "python-dotenv>=1.0.0",
         "dstack-sdk>=0.2.0",
+        "requests>=2.31.0",
+        "httpx>=0.25.0",
         "aiohttp>=3.8.0",
         "pydantic>=2.0.0",
         "typing-extensions>=4.5.0",
         "fastapi>=0.104.0",
         "uvicorn>=0.24.0",
         "eth-utils>=2.2.0",
+        "openai>=1.0.0",
     ],
     extras_require={
         "ai": [

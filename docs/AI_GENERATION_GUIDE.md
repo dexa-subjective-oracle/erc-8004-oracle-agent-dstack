@@ -41,7 +41,7 @@ REDPILL_API_KEY=your_api_key_here
 REDPILL_API_URL=https://api.redpill.ai
 
 # Optional: Configure AI model settings
-AI_MODEL=phala/qwen-2.5-7b-instruct
+AI_MODEL=phala/gemma3-4b-instruct
 AI_TEMPERATURE=0.3
 AI_MAX_TOKENS=2000
 ```
@@ -132,7 +132,7 @@ python verify_ai_attestation.py attestation.json
     "timestamp": "2025-01-15T10:30:00Z",
     "nonce": "...",
     "inference": {
-      "model": "phala/qwen-2.5-7b-instruct",
+      "model": "phala/gemma3-4b-instruct",
       "prompt_hash": "...",
       "response_hash": "...",
       "usage": { /* token usage */ }
@@ -304,7 +304,7 @@ import hashlib
 nonce = secrets.token_hex(32)
 attestation = requests.get(
     "https://api.redpill.ai/v1/attestation/report",
-    params={"model": "phala/qwen-2.5-7b-instruct", "nonce": nonce},
+    params={"model": "phala/gemma3-4b-instruct", "nonce": nonce},
     headers={"Authorization": f"Bearer {api_key}"}
 ).json()
 
@@ -424,7 +424,7 @@ Choose model based on task:
 
 | Task | Recommended Model | Reason |
 |------|-------------------|--------|
-| Simple code | `phala/qwen-2.5-7b-instruct` | Fast, good for straightforward tasks |
+| Simple code | `phala/gemma3-4b-instruct` | Fast, good for straightforward tasks |
 | Complex logic | `phala/deepseek-chat-v3-0324` | Strong reasoning capabilities |
 | Large codebase | `phala/gpt-oss-120b` | Most capable, handles complexity |
 | Balanced | `phala/llama-3.3-70b` | Good trade-off |
@@ -510,7 +510,7 @@ RedPill API pricing (approximate):
 
 | Model | Cost per 1K tokens | Speed |
 |-------|-------------------|-------|
-| qwen-2.5-7b-instruct | ~$0.10 | Fast |
+| phala/gemma3-4b-instruct | ~$0.10 | Fast |
 | deepseek-chat-v3 | ~$0.20 | Medium |
 | gpt-oss-120b | ~$0.50 | Slow |
 | llama-3.3-70b | ~$0.30 | Medium |

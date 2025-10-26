@@ -10,7 +10,6 @@ from eth_typing import HexStr
 from web3 import Web3
 
 from web3.exceptions import BadFunctionCallOutput, ContractLogicError
-
 from src.utils.contract_loader import load_abi
 
 
@@ -54,9 +53,11 @@ class OracleClient:
             try:
                 raw = self.oracle_contract.functions.getRequest(request_id).call()
             except (BadFunctionCallOutput, ContractLogicError):
-                raw = self.oracle_contract.functions.requests(request_id).call()
+                raw = self._call_requests_with_fallback(request_id)
+            except ValueError:
+                raw = self._call_requests_fallback(request_id)
         else:
-            raw = self.oracle_contract.functions.requests(request_id).call()
+            raw = self._call_requests_with_fallback(request_id)
 
         # Some deployments append resolver to the struct. We only need the first nine fields.
         if isinstance(raw, (list, tuple)) and len(raw) >= 10:
@@ -73,6 +74,60 @@ class OracleClient:
             settled_price=raw[7],
             evidence_hash=raw[8]
         )
+
+    def _call_requests_fallback(self, request_id: bytes) -> Any:
+        """
+        Handle decoding edge cases when contract ABI differs (9-field vs 10-field struct).
+        """
+        fn = self.oracle_contract.get_function_by_signature("requests(bytes32)")
+        call_data = fn(request_id)._encode_transaction_data()
+        raw_bytes = self.w3.eth.call({"to": self.oracle_contract.address, "data": call_data})
+
+        # Fallback to 9-field layout (older deployments without resolver)
+        layouts = [
+            [
+                "address",
+                "address",
+                "uint256",
+                "uint256",
+                "bytes32",
+                "bytes",
+                "bool",
+                "int256",
+                "bytes32",
+                "address",
+            ],
+            [
+                "address",
+                "address",
+                "uint256",
+                "uint256",
+                "bytes32",
+                "bytes",
+                "bool",
+                "int256",
+                "bytes32",
+            ],
+        ]
+
+        payload = bytes(raw_bytes)
+
+        for types in layouts:
+            try:
+                values = self.w3.codec.decode(types, payload)
+                if len(values) >= 10:
+                    return values[:9]
+                return values
+            except Exception:
+                continue
+
+        raise RuntimeError("Failed to decode TeeOracle.requests response")
+
+    def _call_requests_with_fallback(self, request_id: bytes) -> Any:
+        try:
+            return self.oracle_contract.functions.requests(request_id).call()
+        except (BadFunctionCallOutput, ContractLogicError, ValueError):
+            return self._call_requests_fallback(request_id)
 
     def pending_requests(self) -> List[OracleRequest]:
         return [self.fetch_request(req_id) for req_id in self.pending_request_ids()]
