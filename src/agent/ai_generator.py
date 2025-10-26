@@ -27,11 +27,14 @@ class AIScriptGenerator:
                 "openai package not installed. Install with `pip install openai` to enable AI generation."
             ) from _OPENAI_IMPORT_ERROR
 
-        inferred_provider = provider or os.getenv("AI_PROVIDER")
-        if not inferred_provider:
-            inferred_provider = "redpill" if (api_key or os.getenv("REDPILL_API_KEY")) else "ollama"
+        inferred_provider = (provider or os.getenv("AI_PROVIDER") or "ollama").lower()
+        if inferred_provider != "ollama":
+            print(
+                "⚠️ AI provider '%s' not supported in this build. Falling back to local Ollama." % inferred_provider
+            )
+            inferred_provider = "ollama"
 
-        self.provider = inferred_provider.lower()
+        self.provider = inferred_provider
         self.model = os.getenv("AI_MODEL") or os.getenv("OLLAMA_MODEL")
 
         self.temperature = float(os.getenv("AI_TEMPERATURE", "0.3"))
@@ -40,23 +43,13 @@ class AIScriptGenerator:
         self.api_base = api_url or os.getenv("AI_API_BASE")
         self.api_key = api_key or os.getenv("AI_API_KEY")
 
-        if self.provider == "ollama":
-            # Default Ollama base and API key
-            default_base = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-            self.api_base = self._normalize_base_url(self.api_base or default_base)
-            self.api_key = self.api_key or os.getenv("OLLAMA_API_KEY", "ollama")
-            self.model = self.model or "gemma3:4b"
-            self.supports_attestation = False
-            provider_label = "Ollama"
-        else:
-            default_base = os.getenv("REDPILL_API_URL", "https://api.redpill.ai/v1")
-            self.api_base = self._normalize_base_url(self.api_base or default_base, ensure_suffix=False)
-            self.api_key = self.api_key or os.getenv("REDPILL_API_KEY")
-            if not self.api_key:
-                raise ValueError("REDPILL_API_KEY not set for RedPill provider")
-            self.model = self.model or "phala/gemma3-4b-instruct"
-            self.supports_attestation = True
-            provider_label = "RedPill"
+        # Ollama backend
+        default_base = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
+        self.api_base = self._normalize_base_url(self.api_base or default_base)
+        self.api_key = self.api_key or os.getenv("OLLAMA_API_KEY", "ollama")
+        self.model = self.model or "gemma3:4b"
+        self.supports_attestation = False
+        provider_label = "Ollama"
 
         self._client = OpenAI(api_key=self.api_key, base_url=self.api_base)
         print(f"🤖 AI Generator ({provider_label} via OpenAI SDK): {self.model} @ {self.api_base}")

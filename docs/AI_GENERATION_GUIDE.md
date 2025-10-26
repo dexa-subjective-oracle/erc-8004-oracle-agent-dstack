@@ -12,7 +12,7 @@ The agent supports **verifiable AI-assisted code generation** with a beautiful w
 ## Key Features
 
 - **Natural Language → Code**: Describe what you want, AI generates the implementation
-- **TEE Attestation**: Cryptographic proof that AI ran in genuine NVIDIA H100 TEE
+- **TEE Attestation**: Cryptographic proof that AI ran in genuine NVIDIA H100 TEE *(requires RedPill provider; local Ollama mode disables attestation)*
 - **Auto-Execution**: Generated code is immediately executed in sandbox
 - **Error Recovery**: Automatic retry with error context if code fails
 - **Verifiable Results**: End users can independently verify attestations
@@ -37,11 +37,12 @@ The agent supports **verifiable AI-assisted code generation** with a beautiful w
 Add your RedPill API key to `.env`:
 
 ```bash
-REDPILL_API_KEY=your_api_key_here
-REDPILL_API_URL=https://api.redpill.ai
-
-# Optional: Configure AI model settings
-AI_MODEL=phala/gemma3-4b-instruct
+# Local Ollama settings
+AI_PROVIDER=ollama
+AI_API_BASE=http://127.0.0.1:11434/v1
+AI_API_KEY=ollama
+OLLAMA_MODEL=gemma3:4b
+AI_MODEL=gemma3:4b
 AI_TEMPERATURE=0.3
 AI_MAX_TOKENS=2000
 ```
@@ -56,7 +57,7 @@ task = {
         "type": "ai_generate_and_execute",
         "description": "Calculate the factorial of 10 and print the result",
         "language": "python",
-        "include_attestation": True
+        "include_attestation": False
     }
 }
 
@@ -97,7 +98,7 @@ python verify_ai_attestation.py attestation.json
     "language": "python" | "javascript",
     "context": { /* optional context */ },
     "max_retries": 2,
-    "include_attestation": true
+    "include_attestation": false
   }
 }
 ```
@@ -110,7 +111,7 @@ python verify_ai_attestation.py attestation.json
 | `language` | string | `"python"` | Programming language: `"python"` or `"javascript"` |
 | `context` | object | `null` | Additional context (variables, requirements, etc.) |
 | `max_retries` | integer | `2` | Number of retries if code fails |
-| `include_attestation` | boolean | `true` | Include TEE attestation in response |
+| `include_attestation` | boolean | `false` | Include TEE attestation in response *(RedPill only; ignored in Ollama mode)* |
 
 ### Response Format
 
@@ -424,7 +425,7 @@ Choose model based on task:
 
 | Task | Recommended Model | Reason |
 |------|-------------------|--------|
-| Simple code | `phala/gemma3-4b-instruct` | Fast, good for straightforward tasks |
+| Simple code | `gemma3:4b` (Ollama) | Fast, good for straightforward tasks |
 | Complex logic | `phala/deepseek-chat-v3-0324` | Strong reasoning capabilities |
 | Large codebase | `phala/gpt-oss-120b` | Most capable, handles complexity |
 | Balanced | `phala/llama-3.3-70b` | Good trade-off |
@@ -506,16 +507,7 @@ if result.get("attestation"):
 
 ## Costs
 
-RedPill API pricing (approximate):
-
-| Model | Cost per 1K tokens | Speed |
-|-------|-------------------|-------|
-| phala/gemma3-4b-instruct | ~$0.10 | Fast |
-| deepseek-chat-v3 | ~$0.20 | Medium |
-| gpt-oss-120b | ~$0.50 | Slow |
-| llama-3.3-70b | ~$0.30 | Medium |
-
-Average code generation: 500-1000 tokens (~$0.05-0.50 per request)
+Local Ollama inference runs on your own hardware, so there are no per-token API fees. Resource consumption largely depends on your host machine (GPU/CPU RAM, VRAM, etc.).
 
 ## FAQ
 
