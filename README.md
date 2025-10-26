@@ -2,201 +2,93 @@
 
 Build trustless AI agents with [dstack](https://github.com/dstack-tee/dstack), ERC-8004 compliance, and seamless deployment on Phala Cloud.
 
+## Current Flow Summary
+
+The template has been narrowed to a single opinionated workflow that mirrors how we operate the subjective oracle stack today:
+
+1. **Request Scheduler** (`scripts/schedule_oracle_requests.py`) runs continuously, pulling BTC spot data from DiaData and calling `TeeOracle.requestPrice` on Base Sepolia. The cadence, lookahead, and spread are controlled through environment variables (see `docker/.env.docker.example`).
+2. **Agent Service** (`deployment/local_agent_server.py`) boots a FastAPI server, ensures the resolver key is registered (manual mode), watches `pendingRequests()`, and settles requests once the grace period expires.
+3. **AI Resolution** is handled locally through Ollama (Gemma 3 4B). The worker fetches DIA prices, produces structured evidence, and submits `settlePrice`. Evidence is persisted under `state/evidence/` and exposed via the `/evidence` explorer.
+4. **Docker Compose** (`docker-compose.yml`) bundles both components (agent + scheduler) so a developer can simply run `docker compose --env-file docker/.env.docker up --build` and observe the full loop end-to-end.
+
+The sections below are being updated to match this more focused setup and to flag legacy scaffolding slated for removal.
+
 ## Features
 
-- 🔐 **TEE-Derived Keys** - Intel TDX attestation via dstack CVM on Phala Cloud
-- 🌐 **ERC-8004 Compliant** - Standard `/agent.json` endpoint
-- 📜 **Real TEE Attestation** - Cryptographic proof of execution
-- 🔗 **On-Chain Registry** - Decentralized agent discovery
-- 🤖 **A2A Protocol** - Agent-to-Agent communication
-- 🔧 **Config-Driven** - Easy customization via `agent_config.json`
-- 🧪 **VibeVM Ready** - Local development environment
+- 🔄 **Automated UMA Flow** – scheduler + AI settlements run continuously on Base Sepolia.
+- 🧠 **Local AI Resolver** – default Gemma3 Ollama backend, no external API dependency.
+- 🧾 **Evidence Explorer** – browse/download settlement artifacts via `/evidence`.
+- 🐳 **Docker-First Runtime** – single compose file with shared named volume for agent state.
+- ⚙️ **Configurable Runtime** – `.env` / `docker/.env.docker` control RPC URLs, cadence, and AI parameters.
 
 ## Quick Start
 
-### For Local Development (VibeVM)
+### Quick Start (Docker)
 
-1. **Fork or use this template**
-
-   Click "Use this template" on GitHub or fork this repository
-
-2. **Start VibeVM and clone**
-
+1. **Copy the Docker env template**
    ```bash
-   # Inside your VibeVM environment
-   git clone https://github.com/YOUR_USERNAME/erc-8004-tee-agent.git
-   cd erc-8004-tee-agent
+   cp docker/.env.docker.example docker/.env.docker
+   ```
+   Fill in the Base Sepolia RPC URL and the funded resolver private key. Optional knobs (cadence, spread, AI temperature) live in the same file.
+
+2. **Bring up the stack**
+   ```bash
+   docker compose --env-file docker/.env.docker up --build
+   ```
+   This starts two services: `agent` (FastAPI + resolver) and `scheduler` (price requests). Both share the `agent-state` volume.
+
+3. **Observe the flow**
+   - `docker compose logs -f agent`
+   - `docker compose logs -f scheduler`
+   - http://localhost:8000/health, http://localhost:8000/evidence, http://localhost:8000/docs
+
+4. **Shut down**
+   ```bash
+   docker compose down
+   docker volume rm erc-8004-oracle-agent-dstack_agent-state  # optional reset
+   rm docker/.env.docker                                      # optional cleanup
    ```
 
-3. **Configure environment**
+## Operational Touchpoints
 
-   ```bash
-   cp .env.local.example .env
-   # Edit .env with your settings
-   ```
-
-4. **Install and run**
-
-   ```bash
-   pip3 install -e .
-   python3 deployment/local_agent_server.py
-   ```
-
-5. **Test your agent**
-
-   Open http://localhost:8000
-
-### For Production Deployment (Phala CVM)
-
-See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions.
-
-```bash
-# 1. Commit your production code
-git commit -m "Production ready"
-git push origin main
-
-# 2. Note your commit hash
-git rev-parse HEAD
-
-# 3. Deploy on phala.com with docker-compose.yml
-# 4. Set secrets: GITHUB_REPO, GIT_COMMIT_HASH, AGENT_SALT
-# 5. Launch CVM and fund your agent
-npx phala deploy -n erc-8004-tee-agent -c docker-compose.yml -e .env
-```
-
-## Developer Workflow
-
-```mermaid
-graph LR
-    A[Fork Template] --> B[Clone to VibeVM]
-    B --> C[Local Development]
-    C --> D[Test & Iterate]
-    D --> E[Commit to GitHub]
-    E --> F[Deploy on Phala]
-    F --> G[Fund & Register]
-    G --> H[Production Agent Live]
-```
-
-**Detailed steps:**
-
-1. **Fork/Template** - Create your repository from this template
-2. **VibeVM Development** - Clone into VibeVM for local testing
-3. **Customize** - Edit `agent_config.json` and add your logic
-4. **Test Locally** - Run agent in VibeVM, test registration flow
-5. **Commit** - Push production-ready code to GitHub
-6. **Deploy** - Use `docker-compose.yml` on Phala with your commit hash
-7. **Launch** - Fund wallet, register on-chain, validate TEE
+| Component / Endpoint               | Purpose                                                                 | Notes |
+|------------------------------------|-------------------------------------------------------------------------|-------|
+| `docker/.env.docker`               | Central configuration (RPC URLs, cadence, AI parameters, resolver key). | Copy from `.example`; never commit real secrets. |
+| `scripts/schedule_oracle_requests.py` | Issues `requestPrice` calls against TeeOracle on a schedule.              | Uses DIA BTC price feed; interval/lookahead configurable. |
+| FastAPI `/health`                  | Liveness probe for the agent container.                                 | Returns JSON heartbeat. |
+| FastAPI `/api/status`              | Displays on-chain registration & resolver status.                        | Useful when debugging manual CLI runs. |
+| FastAPI `/evidence`                | HTML explorer for `state/evidence/` artifacts (view/download).           | Evidence includes AI script, metadata, and `txHash`. |
+| CLI `python scripts/agent_cli.py run` | Manually trigger a settlement cycle (AI by default, optional override).   | Reads the same environment variables as the container. |
+| Named volume `agent-state`         | Persists agent ID, evidence, debug files between restarts.               | Remove via `docker volume rm …` for a clean slate. |
 
 ## Project Structure
 
 ```
-erc-8004-tee-agent/
-├── agent_config.json          # Agent metadata & capabilities
-├── entrypoint.sh              # Build & deploy script (customize this!)
-├── docker-compose.yml         # Production deployment config
-├── .env.example               # Production environment template
-├── .env.local.example         # Local development template
-├── DEV_GUIDE.md              # Comprehensive developer guide
-├── DEPLOYMENT.md             # Production deployment checklist
-├── contracts/                 # Solidity contracts
-├── src/agent/                 # Core agent logic
-│   ├── tee_auth.py           # TEE key derivation & auth
-│   ├── tee_verifier.py       # TEE attestation submission
-│   ├── agent_card.py         # ERC-8004 card builders
-│   ├── registry.py           # On-chain registry client
-│   └── base.py               # Base agent functionality
-├── deployment/
-│   └── local_agent_server.py # FastAPI server
-└── static/                    # Web UI assets
+erc-8004-oracle-agent-dstack/
+├── docker-compose.yml         # Agent + scheduler services
+├── docker/                    # Entrypoints and env templates
+├── scripts/                   # CLI utilities and scheduler
+├── deployment/                # FastAPI application
+├── src/                       # Core agent libraries
+├── docs/                      # Runbooks and references
+└── state/                     # (ignored) runtime state for local/dev runs
 ```
-
-## Architecture
-
-```
-┌─────────────┐
-│   Wallet    │ Fund with Base Sepolia ETH
-└─────────────┘
-       ↓
-┌─────────────┐
-│  Register   │ Identity Registry (on-chain)
-└─────────────┘
-       ↓
-┌─────────────┐
-│ TEE Verify  │ Attestation + Code Measurement
-└─────────────┘
-       ↓
-┌─────────────┐
-│    Ready    │ A2A endpoints active
-└─────────────┘
-```
-
-## API Endpoints
-
-- `GET /agent.json` - ERC-8004 registration-v1 format
-- `GET /.well-known/agent-card.json` - A2A agent card
-- `GET /api/status` - Agent status
-- `POST /api/register` - Register on-chain
-- `POST /api/tee/register` - Register TEE key
-- `POST /api/metadata/update` - Update on-chain metadata
-- `POST /tasks` - A2A task submission
-- `GET /tasks/{id}` - Task status
 
 ## Deployed Contracts
 
-**Base Sepolia:**
-- IdentityRegistry: `0x8506e13d47faa2DC8c5a0dD49182e74A6131a0e3` (0.0001 ETH fee)
-- TEERegistry: `0x03eCA4d903Adc96440328C2E3a18B71EB0AFa60D`
-- Verifier: `0x481ce1a6EEC3016d1E61725B1527D73Df1c393a5`
+We target the Base Sepolia deployment published in `contracts/deployments/base_sepolia_deployment.json`. The scheduler and agent expect those addresses unless overridden in the environment.
 
-## Configuration
+## Cleanup Plan
 
-**`.env`** - Runtime config:
-```bash
-AGENT_DOMAIN=your-domain.com
-AGENT_SALT=unique-salt
-IDENTITY_REGISTRY_ADDRESS=0x8506e13d47faa2DC8c5a0dD49182e74A6131a0e3
-TEE_REGISTRY_ADDRESS=0x03eCA4d903Adc96440328C2E3a18B71EB0AFa60D
-```
+The repository still contains template-era scaffolding that we intend to remove. The following tasks are queued so the agent remains lightweight:
 
-**`agent_config.json`** - Agent metadata:
-```json
-{
-  "name": "Your Agent",
-  "description": "Agent description",
-  "endpoints": {
-    "a2a": {"enabled": true},
-    "mcp": {"enabled": false, "endpoint": ""},
-    "ens": {"enabled": false, "endpoint": ""}
-  },
-  "evmChains": [
-    {"name": "Base", "chainId": 8453}
-  ],
-  "supportedTrust": ["tee-attestation"]
-}
-```
+1. **Drop RedPill/attestation code paths** – `src/agent/ai_generator.py` and the verifier helpers (`verify_ai_attestation.py`) still contain unused logic. Remove once we fully commit to Ollama-only flows.
+2. **Cull unused FastAPI routes** – endpoints like `/tasks`, `/api/metadata/update`, and legacy A2A flows are dormant. Audit and remove to reduce attack surface.
+3. **Retire legacy front-end assets** – the dashboards in `static/` and references to `/developer` are stale; simplify to `/health` and `/evidence`.
+4. **Trim documentation** – files such as `DEPLOYMENT.md`, `agent_config.json`, and VibeVM instructions describe superseded workflows. Update or archive.
+5. **Simplify TEE verifier proof mode** – proof registration is still stubbed. Either implement fully or cut until we have a concrete requirement.
 
-## Customization
-
-Edit `agent_config.json` to add endpoints:
-
-**Add MCP:**
-```json
-"mcp": {
-  "enabled": true,
-  "endpoint": "https://mcp.agent.eth/",
-  "version": "2025-06-18"
-}
-```
-
-**Add chains:**
-```json
-{"name": "Polygon", "chainId": 137}
-```
-
-**Add trust models:**
-```json
-"supportedTrust": ["tee-attestation", "reputation"]
-```
+Please open a GitHub issue before tackling any of these so we can coordinate sequencing.
 
 ## Documentation
 
